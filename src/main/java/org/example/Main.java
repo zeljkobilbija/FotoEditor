@@ -33,6 +33,7 @@ import javafx.scene.control.Slider;
 import javafx.scene.control.Tab;
 import javafx.scene.control.TabPane;
 import javafx.scene.control.TextField;
+import javafx.scene.control.Toggle;
 import javafx.scene.control.ToggleButton;
 import javafx.scene.control.ToggleGroup;
 import javafx.scene.control.TextInputDialog;
@@ -62,13 +63,12 @@ import javafx.scene.layout.FlowPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Pane;
 import javafx.scene.layout.Priority;
+import javafx.scene.layout.Region;
 import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
 import javafx.scene.paint.Color;
 import javafx.scene.shape.Circle;
 import javafx.scene.shape.Rectangle;
-import javafx.scene.shape.StrokeLineCap;
-import javafx.scene.shape.StrokeLineJoin;
 import javafx.scene.text.Font;
 import javafx.scene.text.FontWeight;
 import javafx.scene.text.Text;
@@ -86,7 +86,9 @@ import javax.imageio.ImageIO;
 import javax.imageio.ImageWriteParam;
 import javax.imageio.ImageWriter;
 import javax.imageio.stream.ImageOutputStream;
+import java.awt.AlphaComposite;
 import java.awt.BasicStroke;
+import java.awt.Composite;
 import java.awt.FontMetrics;
 import java.awt.Graphics2D;
 import java.awt.RenderingHints;
@@ -107,6 +109,8 @@ import java.util.Optional;
 import java.util.Random;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.FutureTask;
+import java.util.function.BiFunction;
+import java.util.function.UnaryOperator;
 import java.util.prefs.BackingStoreException;
 import java.util.prefs.Preferences;
 
@@ -119,6 +123,8 @@ public class Main extends Application {
     private static final String KLJUC_NEDAVNE = "nedavneSlike";
     private static final String KLJUC_NAJVECA_STRANA = "najvecaStranaPriCuvanju";
     private static final String KLJUC_KVALITET_JPG = "kvalitetJpg";
+    private static final String KLJUC_PALETA = "paleta.";
+    private static final String KLJUC_KARTICA = "izabranaKartica";
     private static final int NAJVISE_NEDAVNIH = 8;
     private static final List<String> PODRZANE_EKSTENZIJE = List.of(".jpg", ".jpeg", ".png", ".bmp", ".gif");
 
@@ -216,9 +222,11 @@ public class Main extends Application {
     private final Pane dodatiTekstovi = new Pane();
     private final List<Text> cvoroviDodatihTekstova = new ArrayList<>();
 
-    // Paleta za crtanje (kartica "Crtanje"); to su podešavanja alatke, ne izmene slike, pa nisu u istoriji
-    private final Canvas platno = new Canvas();
+    // Paleta za crtanje (kartica "Crtanje"); to su podešavanja alatke, ne izmene slike, pa nisu u istoriji,
+    // ali se pamte i posle zatvaranja programa
+    private final ImageView crtezPrikaz = new ImageView();
     private final ToggleGroup alati = new ToggleGroup();
+    private final CheckBox popunjenOblik = new CheckBox("Popunjen oblik (strelica, pravougaonik, elipsa)");
     private final ColorPicker bojaCetkice = new ColorPicker(Color.RED);
     // debljina: 1 do 100, kao hiljaditi delovi visine slike puta dva (100 = 20% visine)
     private final Slider debljinaCetkice = new Slider(1, 100, 10);
@@ -236,6 +244,21 @@ public class Main extends Application {
     // Poluprečnik kruga za crvene oči, u pikselima ekrana
     private final Slider velicinaOka = new Slider(4, 80, 15);
     private final Circle indikatorOka = new Circle();
+
+    // Nalepnice na prikazu i klizači za izabranu nalepnicu (kartica "Nalepnice")
+    private final Pane slojNalepnica = new Pane();
+    private final List<ImageView> cvoroviNalepnica = new ArrayList<>();
+    private int izabranaNalepnica = -1;
+    private final Label izabranaNalepnicaOznaka = new Label();
+    private final Slider velicinaNalepnice = new Slider(0.02, 1, 0.25);
+    private final Slider neprovidnostNalepnice = new Slider(0, 1, 1);
+    private final Slider rotacijaNalepnice = new Slider(-180, 180, 0);
+    // true dok se klizači nalepnice postavljaju iz kôda (tada ne menjaju nalepnicu)
+    private boolean postavljaKlizaceNalepnice = false;
+    // Verzija slojeva napravljena na početku trenutnog pokreta (vidi izmeniNalepnicu), ili -1
+    private int verzijaPokreta = -1;
+    private boolean pomeraNalepnicu = false;
+    private final double[] hvatanjeNalepnice = new double[2];
 
     // Prikaz teksta i okvira preko slike na glavnom prozoru
     private final Rectangle okvirPrikaz = new Rectangle();
@@ -511,10 +534,48 @@ public class Main extends Application {
             paletaBoja.getChildren().add(uzorak);
         }
 
+        // Podešavanja palete se pamte i posle zatvaranja programa
+        String sacuvanaAlatka = podesavanjaPrograma.get(KLJUC_PALETA + "alat", Alat.OLOVKA.name());
+        for (Toggle alatka : alati.getToggles()) {
+            if (((Alat) alatka.getUserData()).name().equals(sacuvanaAlatka)) {
+                alati.selectToggle(alatka);
+            }
+        }
+        alati.selectedToggleProperty().addListener((o, s, n) -> {
+            if (n != null) {
+                podesavanjaPrograma.put(KLJUC_PALETA + "alat", ((Alat) n.getUserData()).name());
+            }
+        });
+        try {
+            bojaCetkice.setValue(Color.web(podesavanjaPrograma.get(KLJUC_PALETA + "boja", "#e53935")));
+        } catch (IllegalArgumentException ignored) {
+            // Oštećen zapis: ostaje početna boja
+        }
+        bojaCetkice.valueProperty().addListener((o, s, n) -> podesavanjaPrograma.put(KLJUC_PALETA + "boja", n.toString()));
+        popunjenOblik.setSelected(podesavanjaPrograma.getBoolean(KLJUC_PALETA + "popunjeno", false));
+        popunjenOblik.selectedProperty().addListener((o, s, n) -> podesavanjaPrograma.putBoolean(KLJUC_PALETA + "popunjeno", n));
+        zapamtiKlizac(debljinaCetkice, KLJUC_PALETA + "debljina");
+        zapamtiKlizac(neprovidnostCetkice, KLJUC_PALETA + "neprovidnost");
+        zapamtiKlizac(mekocaCetkice, KLJUC_PALETA + "mekoca");
+        zapamtiKlizac(velicinaOka, KLJUC_PALETA + "velicinaOka");
+
         // Promena slojeva (crtež, dodati tekstovi, crvene oči) osvežava prikaz;
         // crvene oči menjaju piksele, pa se tada slika ponovo obrađuje
+        // Klizači izabrane nalepnice: jedno prevlačenje klizača je jedan korak za Undo
+        poveziKlizacNalepnice(velicinaNalepnice, (n, v) -> new Nalepnica(n.slika(), n.ime(), n.x(), n.y(),
+                v, n.neprovidnost(), n.rotacija()));
+        poveziKlizacNalepnice(neprovidnostNalepnice, (n, v) -> new Nalepnica(n.slika(), n.ime(), n.x(), n.y(),
+                n.sirina(), v, n.rotacija()));
+        poveziKlizacNalepnice(rotacijaNalepnice, (n, v) -> new Nalepnica(n.slika(), n.ime(), n.x(), n.y(),
+                n.sirina(), n.neprovidnost(), v));
+        izaberiNalepnicu(-1);
+
         verzijaSlojeva.valueProperty().addListener((o, s, n) -> {
             osveziDodatke();
+            // Posle Undo/Redo izabrana nalepnica možda više ne postoji ili ima druge vrednosti
+            if (!postavljaKlizaceNalepnice) {
+                izaberiNalepnicu(izabranaNalepnica);
+            }
             if (!slojeviZa(s.intValue()).oci().equals(slojeviZa(n.intValue()).oci())) {
                 osveziPregled();
             }
@@ -553,11 +614,24 @@ public class Main extends Application {
                         new Label("Boja"), bojaCetkice, paletaBoja,
                         new Label("Debljina"), debljinaCetkice,
                         new Label("Neprovidnost"), neprovidnostCetkice,
-                        new Label("Mekoća ivice (četkica i prava linija)"), mekocaCetkice,
+                        new Label("Mekoća ivice (četkica, gumica i prava linija)"), mekocaCetkice,
+                        popunjenOblik,
                         new Separator(),
                         napraviDugme("Obriši poslednji potez", this::obrisiPoslednjiPotez),
                         napraviDugme("Obriši ceo crtež", this::obrisiCrtez),
-                        new Label("Undo vraća potez po potez. Crtež se ne menja filterima.")),
+                        new Label("Gumica briše samo crtež, ne fotografiju.\n"
+                                + "Undo vraća potez po potez. Crtež se ne menja filterima.")),
+                napraviKarticu("Nalepnice",
+                        napraviDugme("Dodaj nalepnicu (slika ili logo)…", () -> dodajNalepnicu(glavniProzor)),
+                        new Label("Klikni na nalepnicu na slici da je izabereš, prevuci je da je pomeriš."),
+                        new Separator(),
+                        izabranaNalepnicaOznaka,
+                        new Label("Veličina"), velicinaNalepnice,
+                        new Label("Neprovidnost"), neprovidnostNalepnice,
+                        new Label("Rotacija (stepeni)"), rotacijaNalepnice,
+                        new Separator(),
+                        napraviDugme("Obriši izabranu nalepnicu", this::obrisiNalepnicu),
+                        napraviDugme("Obriši sve nalepnice", this::obrisiSveNalepnice)),
                 napraviKarticu("Filteri",
                         new Label("Oštrina"), ostrina,
                         new Label("Vinjeta"), vinjeta,
@@ -650,6 +724,13 @@ public class Main extends Application {
                                 + "(filteri, isecanje, rotacija, tekst, okvir i veličina iznad).\n"
                                 + "Originali se ne menjaju.")));
         osveziMojeStilove();
+        // Prozor "Komande" se otvara na kartici koja je poslednja korišćena
+        int sacuvanaKartica = podesavanjaPrograma.getInt(KLJUC_KARTICA, 0);
+        if (sacuvanaKartica >= 0 && sacuvanaKartica < kartice.getTabs().size()) {
+            kartice.getSelectionModel().select(sacuvanaKartica);
+        }
+        kartice.getSelectionModel().selectedIndexProperty().addListener(
+                (o, s, n) -> podesavanjaPrograma.putInt(KLJUC_KARTICA, n.intValue()));
 
         Stage komande = new Stage();
         komande.initOwner(prozor);
@@ -729,16 +810,15 @@ public class Main extends Application {
         Pane slojTeksta = new Pane(dodatiTekstovi, senkaPrikaz, tekstPrikaz);
         slojTeksta.setMouseTransparent(true);
         dodatiTekstovi.setMouseTransparent(true);
-        // Crtež je iznad slike, a ispod teksta; platno je veličine prostora za prikaz
-        Pane slojCrteza = new Pane(platno);
+        // Redom odozdo: slika, nalepnice, crtež, tekst. Crtež je slika veličine prostora za prikaz.
+        Pane slojCrteza = new Pane(slojNalepnica, crtezPrikaz);
         slojCrteza.setMouseTransparent(true);
-        // Mala željena veličina, da veliko platno ne bi sprečavalo smanjivanje prozora (StackPane ga ionako raširi)
+        // Mala željena veličina, da velika slika crteža ne bi sprečavala smanjivanje prozora
+        // (StackPane ga ionako raširi na ceo prostor)
         slojCrteza.setPrefSize(0, 0);
         StackPane centar = new StackPane(slojOkvira, prikaz, slojCrteza, slojTeksta, slojIsecka);
-        platno.widthProperty().bind(centar.widthProperty());
-        platno.heightProperty().bind(centar.heightProperty());
-        platno.widthProperty().addListener((o, s, n) -> osveziCrtez());
-        platno.heightProperty().addListener((o, s, n) -> osveziCrtez());
+        centar.widthProperty().addListener((o, s, n) -> osveziCrtez());
+        centar.heightProperty().addListener((o, s, n) -> osveziCrtez());
         // Krug koji pokazuje koliki deo oka će se ispraviti
         indikatorOka.setFill(Color.TRANSPARENT);
         indikatorOka.setStroke(Color.WHITE);
@@ -814,6 +894,16 @@ public class Main extends Application {
                 hvatanjeTeksta[0] = e.getX() - granice.getCenterX();
                 hvatanjeTeksta[1] = e.getY() - granice.getCenterY();
                 centar.setCursor(Cursor.CLOSED_HAND);
+            } else if (nalepnicaIspod(e.getX(), e.getY()) >= 0) {
+                // Klik na nalepnicu je bira; prevlačenje je pomera (celo prevlačenje je jedan korak za Undo)
+                int indeks = nalepnicaIspod(e.getX(), e.getY());
+                izaberiNalepnicu(indeks);
+                Bounds granice = cvoroviNalepnica.get(indeks).getBoundsInParent();
+                hvatanjeNalepnice[0] = e.getX() - granice.getCenterX();
+                hvatanjeNalepnice[1] = e.getY() - granice.getCenterY();
+                pomeraNalepnicu = true;
+                verzijaPokreta = -1;
+                centar.setCursor(Cursor.CLOSED_HAND);
             }
         });
         centar.setOnMouseDragged(e -> {
@@ -826,6 +916,10 @@ public class Main extends Application {
                 nastaviPotez(e.getX(), e.getY());
             } else if (crveneOciDugme.isSelected()) {
                 return;
+            } else if (pomeraNalepnicu) {
+                double[] udeo = udeoSlike(e.getX() - hvatanjeNalepnice[0], e.getY() - hvatanjeNalepnice[1]);
+                izmeniNalepnicu(n -> new Nalepnica(n.slika(), n.ime(), ogranici(udeo[0], 0, 1), ogranici(udeo[1], 0, 1),
+                        n.sirina(), n.neprovidnost(), n.rotacija()), true);
             } else if (pomeraTekst) {
                 // Novo središte teksta se pretvara u položaj od -1 do 1 u odnosu na sliku.
                 // Dok traje prevlačenje ne beleži se u istoriju, nego tek kad se miš pusti.
@@ -848,6 +942,12 @@ public class Main extends Application {
         centar.setOnMouseReleased(e -> {
             if (trenutneTackeX != null) {
                 zavrsiPotez();
+                return;
+            }
+            if (pomeraNalepnicu) {
+                pomeraNalepnicu = false;
+                verzijaPokreta = -1;
+                centar.setCursor(Cursor.OPEN_HAND);
                 return;
             }
             if (pomeraTekst) {
@@ -873,7 +973,8 @@ public class Main extends Application {
         // ruka za pomeranje
         centar.setOnMouseMoved(e -> {
             boolean krstic = biraIsecak || crtajDugme.isSelected() || crveneOciDugme.isSelected();
-            boolean iznadTeksta = jeIznadTeksta(e.getX(), e.getY()) || dodatiTekstIspod(e.getX(), e.getY()) >= 0;
+            boolean iznadTeksta = jeIznadTeksta(e.getX(), e.getY()) || dodatiTekstIspod(e.getX(), e.getY()) >= 0
+                    || nalepnicaIspod(e.getX(), e.getY()) >= 0;
             centar.setCursor(krstic ? Cursor.CROSSHAIR : iznadTeksta || uvecanje > 1 ? Cursor.OPEN_HAND : Cursor.DEFAULT);
             indikatorOka.setVisible(crveneOciDugme.isSelected() && prikaz.getImage() != null);
             indikatorOka.setCenterX(e.getX());
@@ -1529,6 +1630,7 @@ public class Main extends Application {
             cvoroviDodatihTekstova.add(tekst);
         }
         postaviTekstCvorove(d, tekstPrikaz, senkaPrikaz, slika, vidljivo);
+        osveziNalepnice(slika, vidljivo);
         osveziCrtez();
     }
 
@@ -1559,16 +1661,20 @@ public class Main extends Application {
         senka.setVisible(imaTeksta && d.senka() > 0);
     }
 
-    // Crta poteze četkicom, sve tekstove i okvir na gotovu sliku (posle filtera i rotacije), isto kao na prikazu.
-    // Okvir se uzima iz teksta koji se uređuje (aktivni), jer je okvir jedan za celu sliku.
+    // Crta nalepnice, poteze četkicom, sve tekstove i okvir na gotovu sliku (posle filtera i rotacije),
+    // istim redom kao na prikazu. Okvir se uzima iz teksta koji se uređuje (aktivni), jer je jedan za celu sliku.
     private static BufferedImage nacrtajDodatke(BufferedImage slika, Dodaci aktivni, Slojevi slojevi) {
         int w = slika.getWidth();
         int h = slika.getHeight();
-        Graphics2D crtanjePoteza = slika.createGraphics();
-        for (Potez potez : slojevi.potezi()) {
-            nacrtajPotez(new AwtCrtac(crtanjePoteza), potez, 0, 0, w, h);
+        nacrtajNalepnice(slika, slojevi.nalepnice());
+        if (!slojevi.potezi().isEmpty()) {
+            // Potezi idu na poseban providan sloj (zbog gumice), koji se zatim stavi preko slike
+            BufferedImage sloj = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
+            nacrtajPoteze(sloj, slojevi.potezi(), 0, 0, w, h);
+            Graphics2D crtanje = slika.createGraphics();
+            crtanje.drawImage(sloj, 0, 0, null);
+            crtanje.dispose();
         }
-        crtanjePoteza.dispose();
         for (Dodaci dodat : slojevi.tekstovi()) {
             nacrtajJedanTekst(slika, dodat);
         }
@@ -1641,20 +1747,37 @@ public class Main extends Application {
     // ===== Crtanje četkicom =====
 
     private enum Alat {
-        OLOVKA("Olovka"), CETKICA("Četkica"), FLOMASTER("Flomaster"), SPREJ("Sprej"), LINIJA("Prava linija");
+        OLOVKA("Olovka"), CETKICA("Četkica"), FLOMASTER("Flomaster"), SPREJ("Sprej"), GUMICA("Gumica"),
+        LINIJA("Prava linija"), STRELICA("Strelica"), PRAVOUGAONIK("Pravougaonik"), ELIPSA("Elipsa");
 
         final String naziv;
 
         Alat(String naziv) {
             this.naziv = naziv;
         }
+
+        // Alatke koje pamte samo početnu i krajnju tačku (od pritiska do puštanja miša)
+        boolean dveTacke() {
+            return this == LINIJA || this == STRELICA || this == PRAVOUGAONIK || this == ELIPSA;
+        }
     }
 
     // Jedan potez mišem. Tačke su udeo širine i visine prikazane (gotove) slike, od 0 do 1;
     // debljina je udeo visine slike, pa potez izgleda isto na prikazu i u sačuvanoj slici.
     // seme: početni broj za nasumične tačke spreja, da sprej uvek izgleda isto.
+    // popunjeno: za strelicu, pravougaonik i elipsu (popunjen oblik umesto obrisa)
     private record Potez(Alat alat, double[] x, double[] y, Color boja, double debljina,
-                         double neprovidnost, double mekoca, long seme) {
+                         double neprovidnost, double mekoca, long seme, boolean popunjeno) {
+    }
+
+    // Nalepnica: druga slika (npr. logo) preko fotografije. Središte je udeo prikazane slike (0 do 1),
+    // širina je udeo širine slike, a rotacija u stepenima.
+    private record Nalepnica(Image slika, String ime, double x, double y, double sirina,
+                             double neprovidnost, double rotacija) {
+
+        double visina(double sirinaSlike) {
+            return sirina * sirinaSlike * slika.getHeight() / slika.getWidth();
+        }
     }
 
     // Ispravka crvenih očiju: središte i poluprečnik su udeo širine/visine cele (neisečene, neokrenute) slike
@@ -1664,10 +1787,27 @@ public class Main extends Application {
     // Sve što nije broj na klizaču: potezi četkicom, ranije dodati tekstovi i ispravke crvenih očiju.
     // Svaka izmena pravi novu verziju u spisku verzijeSlojeva, a skriveni klizač verzijaSlojeva pamti
     // redni broj trenutne verzije; tako i ovo radi sa Undo/Redo, Resetuj i proverom nesačuvanih izmena.
-    private record Slojevi(List<Potez> potezi, List<Dodaci> tekstovi, List<CrvenoOko> oci) {
+    private record Slojevi(List<Potez> potezi, List<Dodaci> tekstovi, List<CrvenoOko> oci,
+                           List<Nalepnica> nalepnice) {
+
+        Slojevi saPotezima(List<Potez> novi) {
+            return new Slojevi(List.copyOf(novi), tekstovi, oci, nalepnice);
+        }
+
+        Slojevi saTekstovima(List<Dodaci> novi) {
+            return new Slojevi(potezi, List.copyOf(novi), oci, nalepnice);
+        }
+
+        Slojevi saOcima(List<CrvenoOko> novi) {
+            return new Slojevi(potezi, tekstovi, List.copyOf(novi), nalepnice);
+        }
+
+        Slojevi saNalepnicama(List<Nalepnica> novi) {
+            return new Slojevi(potezi, tekstovi, oci, List.copyOf(novi));
+        }
     }
 
-    private static final Slojevi PRAZNI_SLOJEVI = new Slojevi(List.of(), List.of(), List.of());
+    private static final Slojevi PRAZNI_SLOJEVI = new Slojevi(List.of(), List.of(), List.of(), List.of());
 
     private Slojevi slojevi() {
         return slojeviZa((int) verzijaSlojeva.getValue());
@@ -1688,71 +1828,16 @@ public class Main extends Application {
         return List.copyOf(rezultat);
     }
 
-    // Crtanje istih poteza na dva načina: na ekranu (JavaFX) i u sačuvanoj slici (Java AWT)
-    private interface Crtac {
-        void linija(double[] xs, double[] ys, double debljina, boolean kvadratniVrh, Color boja);
-
-        void krug(double x, double y, double poluprecnik, Color boja);
-
-        void kvadrat(double x, double y, double polaStranice, Color boja);
-    }
-
-    private record FxCrtac(GraphicsContext g) implements Crtac {
-        public void linija(double[] xs, double[] ys, double debljina, boolean kvadratniVrh, Color boja) {
-            g.setStroke(boja);
-            g.setLineWidth(debljina);
-            g.setLineCap(kvadratniVrh ? StrokeLineCap.SQUARE : StrokeLineCap.ROUND);
-            g.setLineJoin(StrokeLineJoin.ROUND);
-            g.strokePolyline(xs, ys, xs.length);
-        }
-
-        public void krug(double x, double y, double poluprecnik, Color boja) {
-            g.setFill(boja);
-            g.fillOval(x - poluprecnik, y - poluprecnik, 2 * poluprecnik, 2 * poluprecnik);
-        }
-
-        public void kvadrat(double x, double y, double polaStranice, Color boja) {
-            g.setFill(boja);
-            g.fillRect(x - polaStranice, y - polaStranice, 2 * polaStranice, 2 * polaStranice);
-        }
-    }
-
-    private record AwtCrtac(Graphics2D g) implements Crtac {
-        AwtCrtac {
-            g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-            g.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE);
-        }
-
-        public void linija(double[] xs, double[] ys, double debljina, boolean kvadratniVrh, Color boja) {
-            Path2D.Double putanja = new Path2D.Double();
-            putanja.moveTo(xs[0], ys[0]);
-            for (int i = 1; i < xs.length; i++) {
-                putanja.lineTo(xs[i], ys[i]);
-            }
-            g.setColor(uAwtBoju(boja));
-            g.setStroke(new BasicStroke((float) debljina,
-                    kvadratniVrh ? BasicStroke.CAP_SQUARE : BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
-            g.draw(putanja);
-        }
-
-        public void krug(double x, double y, double poluprecnik, Color boja) {
-            g.setColor(uAwtBoju(boja));
-            g.fill(new Ellipse2D.Double(x - poluprecnik, y - poluprecnik, 2 * poluprecnik, 2 * poluprecnik));
-        }
-
-        public void kvadrat(double x, double y, double polaStranice, Color boja) {
-            g.setColor(uAwtBoju(boja));
-            g.fill(new java.awt.geom.Rectangle2D.Double(
-                    x - polaStranice, y - polaStranice, 2 * polaStranice, 2 * polaStranice));
-        }
-    }
-
-    // Crta potez na slici čiji je gornji levi ugao (x0, y0), a veličina w x h piksela
-    private static void nacrtajPotez(Crtac crtac, Potez p, double x0, double y0, double w, double h) {
+    // Crta potez na slici čiji je gornji levi ugao (x0, y0), a veličina w x h piksela.
+    // Isti kod crta i na ekranu i u sačuvanoj slici (oba preko Java AWT), pa potezi svuda izgledaju isto.
+    // Potezi se crtaju na poseban providan sloj, da bi gumica brisala samo crtež, a ne fotografiju.
+    private static void nacrtajPotez(Graphics2D g, Potez p, double x0, double y0, double w, double h) {
         int n = p.x().length;
         if (n == 0) {
             return;
         }
+        g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+        g.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE);
         double[] xs = new double[n];
         double[] ys = new double[n];
         for (int i = 0; i < n; i++) {
@@ -1760,45 +1845,111 @@ public class Main extends Application {
             ys[i] = y0 + p.y()[i] * h;
         }
         double debljina = Math.max(0.5, p.debljina() * h);
-
-        if (p.alat() == Alat.SPREJ) {
-            // Sprej: oko svake tačke 12 sitnih kapljica nasumično raspoređenih u krugu prečnika 2 x debljina
-            Random nasumicno = new Random(p.seme());
-            Color boja = p.boja().deriveColor(0, 1, 1, p.neprovidnost());
-            double kapljica = Math.max(0.5, debljina * 0.05);
-            for (int i = 0; i < n; i++) {
-                for (int k = 0; k < 12; k++) {
-                    double ugao = nasumicno.nextDouble() * 2 * Math.PI;
-                    double udaljenost = Math.sqrt(nasumicno.nextDouble()) * debljina;
-                    crtac.krug(xs[i] + Math.cos(ugao) * udaljenost, ys[i] + Math.sin(ugao) * udaljenost,
-                            kapljica, boja);
-                }
-            }
-            return;
+        Composite prethodni = g.getComposite();
+        if (p.alat() == Alat.GUMICA) {
+            // Gumica: gde prolazi, sloj sa crtežom postaje providan (koliko je gumica neprovidna)
+            g.setComposite(AlphaComposite.DstOut);
         }
 
+        switch (p.alat()) {
+            case SPREJ -> {
+                // Sprej: oko svake tačke 12 sitnih kapljica nasumično raspoređenih u krugu prečnika 2 x debljina
+                Random nasumicno = new Random(p.seme());
+                g.setColor(uAwtBoju(p.boja().deriveColor(0, 1, 1, p.neprovidnost())));
+                double kapljica = Math.max(0.5, debljina * 0.05);
+                for (int i = 0; i < n; i++) {
+                    for (int k = 0; k < 12; k++) {
+                        double ugao = nasumicno.nextDouble() * 2 * Math.PI;
+                        double udaljenost = Math.sqrt(nasumicno.nextDouble()) * debljina;
+                        g.fill(new Ellipse2D.Double(xs[i] + Math.cos(ugao) * udaljenost - kapljica,
+                                ys[i] + Math.sin(ugao) * udaljenost - kapljica, 2 * kapljica, 2 * kapljica));
+                    }
+                }
+            }
+            case PRAVOUGAONIK, ELIPSA, STRELICA -> nacrtajOblik(g, p, xs[0], ys[0], xs[n - 1], ys[n - 1], debljina);
+            default -> nacrtajLiniju(g, p, xs, ys, debljina);
+        }
+        g.setComposite(prethodni);
+    }
+
+    // Olovka, četkica, flomaster, gumica i prava linija
+    private static void nacrtajLiniju(Graphics2D g, Potez p, double[] xs, double[] ys, double debljina) {
         boolean kvadratniVrh = p.alat() == Alat.FLOMASTER;
-        double mekoca = p.alat() == Alat.CETKICA || p.alat() == Alat.LINIJA ? p.mekoca() : 0;
+        boolean meka = p.alat() == Alat.CETKICA || p.alat() == Alat.LINIJA || p.alat() == Alat.GUMICA;
+        double mekoca = meka ? p.mekoca() : 0;
         // Meka ivica: potez se crta 6 puta, od najšireg do najužeg, poluprovidnom bojom.
         // Na sredini se slojevi saberu do izabrane neprovidnosti, a ka ivici je potez sve providniji.
         int prolaza = mekoca > 0 ? 6 : 1;
         double cilj = prolaza > 1 ? Math.min(p.neprovidnost(), 0.97) : p.neprovidnost();
-        Color boja = p.boja().deriveColor(0, 1, 1, 1 - Math.pow(1 - cilj, 1.0 / prolaza));
+        g.setColor(uAwtBoju(p.boja().deriveColor(0, 1, 1, 1 - Math.pow(1 - cilj, 1.0 / prolaza))));
         double najsira = debljina * (1 + mekoca);
         double najuza = debljina * Math.max(0.25, 1 - 0.75 * mekoca);
+        Path2D.Double putanja = new Path2D.Double();
+        putanja.moveTo(xs[0], ys[0]);
+        for (int i = 1; i < xs.length; i++) {
+            putanja.lineTo(xs[i], ys[i]);
+        }
         for (int i = 0; i < prolaza; i++) {
             double udeo = prolaza == 1 ? 1 : i / (prolaza - 1.0);
             double sirina = najsira + (najuza - najsira) * udeo;
-            if (n == 1) {
+            if (xs.length == 1) {
                 // Jedan klik: tačka u obliku vrha alatke
                 if (kvadratniVrh) {
-                    crtac.kvadrat(xs[0], ys[0], sirina / 2, boja);
+                    g.fill(new java.awt.geom.Rectangle2D.Double(xs[0] - sirina / 2, ys[0] - sirina / 2, sirina, sirina));
                 } else {
-                    crtac.krug(xs[0], ys[0], sirina / 2, boja);
+                    g.fill(new Ellipse2D.Double(xs[0] - sirina / 2, ys[0] - sirina / 2, sirina, sirina));
                 }
             } else {
-                crtac.linija(xs, ys, sirina, kvadratniVrh, boja);
+                g.setStroke(new BasicStroke((float) sirina,
+                        kvadratniVrh ? BasicStroke.CAP_SQUARE : BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+                g.draw(putanja);
             }
+        }
+    }
+
+    // Pravougaonik i elipsa između dve tačke, i strelica od prve ka drugoj tački
+    private static void nacrtajOblik(Graphics2D g, Potez p, double x1, double y1, double x2, double y2,
+                                     double debljina) {
+        g.setColor(uAwtBoju(p.boja().deriveColor(0, 1, 1, p.neprovidnost())));
+        g.setStroke(new BasicStroke((float) debljina, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+        double levo = Math.min(x1, x2);
+        double gore = Math.min(y1, y2);
+        double sirina = Math.abs(x2 - x1);
+        double visina = Math.abs(y2 - y1);
+        if (p.alat() == Alat.STRELICA) {
+            // Vrh strelice: dve kraće linije pod uglom od 25° unazad, dužine 4 debljine (najmanje 1/4 strelice)
+            double ugao = Math.atan2(y2 - y1, x2 - x1);
+            double duzinaVrha = Math.min(Math.hypot(x2 - x1, y2 - y1) * 0.4, Math.max(debljina * 4, 8));
+            double lx = x2 - duzinaVrha * Math.cos(ugao - Math.toRadians(25));
+            double ly = y2 - duzinaVrha * Math.sin(ugao - Math.toRadians(25));
+            double dx = x2 - duzinaVrha * Math.cos(ugao + Math.toRadians(25));
+            double dy = y2 - duzinaVrha * Math.sin(ugao + Math.toRadians(25));
+            Path2D.Double vrh = new Path2D.Double();
+            if (p.popunjeno()) {
+                // Popunjen vrh je trougao; telo strelice ide do njegove osnove
+                vrh.moveTo(x2, y2);
+                vrh.lineTo(lx, ly);
+                vrh.lineTo(dx, dy);
+                vrh.closePath();
+                g.draw(new java.awt.geom.Line2D.Double(x1, y1, (lx + dx) / 2, (ly + dy) / 2));
+                g.fill(vrh);
+                g.draw(vrh);
+            } else {
+                vrh.moveTo(lx, ly);
+                vrh.lineTo(x2, y2);
+                vrh.lineTo(dx, dy);
+                g.draw(new java.awt.geom.Line2D.Double(x1, y1, x2, y2));
+                g.draw(vrh);
+            }
+            return;
+        }
+        java.awt.Shape oblik = p.alat() == Alat.ELIPSA
+                ? new Ellipse2D.Double(levo, gore, sirina, visina)
+                : new java.awt.geom.Rectangle2D.Double(levo, gore, sirina, visina);
+        if (p.popunjeno()) {
+            g.fill(oblik);
+        } else {
+            g.draw(oblik);
         }
     }
 
@@ -1806,35 +1957,67 @@ public class Main extends Application {
     private Potez trenutniPotez() {
         double[] xs = trenutneTackeX.stream().mapToDouble(Double::doubleValue).toArray();
         double[] ys = trenutneTackeY.stream().mapToDouble(Double::doubleValue).toArray();
-        Alat alat = alati.getSelectedToggle() == null ? Alat.OLOVKA : (Alat) alati.getSelectedToggle().getUserData();
-        return new Potez(alat, xs, ys, bojaCetkice.getValue(), debljinaCetkice.getValue() / 500,
-                neprovidnostCetkice.getValue(), mekocaCetkice.getValue(), semePoteza);
+        return new Potez(izabranaAlatka(), xs, ys, bojaCetkice.getValue(), debljinaCetkice.getValue() / 500,
+                neprovidnostCetkice.getValue(), mekocaCetkice.getValue(), semePoteza, popunjenOblik.isSelected());
     }
 
-    // Iscrtava sve poteze preko slike na glavnom prozoru (samo unutar slike)
+    private Alat izabranaAlatka() {
+        return alati.getSelectedToggle() == null ? Alat.OLOVKA : (Alat) alati.getSelectedToggle().getUserData();
+    }
+
+    // Crta sve poteze na providan sloj veličine w x h (gornji levi ugao slike je u (x0, y0))
+    private static void nacrtajPoteze(BufferedImage sloj, List<Potez> potezi, double x0, double y0,
+                                      double w, double h) {
+        Graphics2D g = sloj.createGraphics();
+        g.clip(new java.awt.geom.Rectangle2D.Double(x0, y0, w, h));
+        for (Potez potez : potezi) {
+            nacrtajPotez(g, potez, x0, y0, w, h);
+        }
+        g.dispose();
+    }
+
+    // Iscrtava sve poteze preko slike na glavnom prozoru (samo unutar slike). Sloj je veličine
+    // prostora za prikaz, a ne uvećane slike, da ne bi bio ogroman kad je slika zumirana.
     private void osveziCrtez() {
-        GraphicsContext g = platno.getGraphicsContext2D();
-        g.clearRect(0, 0, platno.getWidth(), platno.getHeight());
-        if (prikaz.getImage() == null || prikazujeOriginal) {
+        List<Potez> potezi = new ArrayList<>(slojevi().potezi());
+        if (trenutneTackeX != null) {
+            potezi.add(trenutniPotez());
+        }
+        Region prostor = (Region) prikaz.getParent();
+        int sirina = prostor == null ? 0 : (int) Math.ceil(prostor.getWidth());
+        int visina = prostor == null ? 0 : (int) Math.ceil(prostor.getHeight());
+        if (prikaz.getImage() == null || prikazujeOriginal || potezi.isEmpty() || sirina <= 0 || visina <= 0) {
+            crtezPrikaz.setImage(null);
             return;
         }
         Bounds slika = prikaz.localToParent(prikaz.getLayoutBounds());
-        g.save();
-        g.beginPath();
-        g.rect(slika.getMinX(), slika.getMinY(), slika.getWidth(), slika.getHeight());
-        g.closePath();
-        g.clip();
-        Crtac crtac = new FxCrtac(g);
-        for (Potez potez : slojevi().potezi()) {
-            nacrtajPotez(crtac, potez, slika.getMinX(), slika.getMinY(), slika.getWidth(), slika.getHeight());
-        }
-        if (trenutneTackeX != null) {
-            nacrtajPotez(crtac, trenutniPotez(), slika.getMinX(), slika.getMinY(), slika.getWidth(), slika.getHeight());
-        }
-        g.restore();
+        BufferedImage sloj = new BufferedImage(sirina, visina, BufferedImage.TYPE_INT_ARGB);
+        nacrtajPoteze(sloj, potezi, slika.getMinX(), slika.getMinY(), slika.getWidth(), slika.getHeight());
+        crtezPrikaz.setImage(uFxSliku(sloj));
     }
 
-    // Tačka miša kao udeo prikazane slike (0 do 1), za crtanje
+    // Pretvara AWT sliku u JavaFX sliku (bez modula javafx.swing)
+    private static WritableImage uFxSliku(BufferedImage slika) {
+        int w = slika.getWidth();
+        int h = slika.getHeight();
+        WritableImage rezultat = new WritableImage(w, h);
+        rezultat.getPixelWriter().setPixels(0, 0, w, h, PixelFormat.getIntArgbInstance(),
+                slika.getRGB(0, 0, w, h, null, 0, w), 0, w);
+        return rezultat;
+    }
+
+    // Pretvara JavaFX sliku u AWT sliku sa providnošću (za nalepnice pri čuvanju)
+    private static BufferedImage uAwtSliku(Image slika) {
+        int w = (int) slika.getWidth();
+        int h = (int) slika.getHeight();
+        int[] pikseli = new int[w * h];
+        slika.getPixelReader().getPixels(0, 0, w, h, PixelFormat.getIntArgbInstance(), pikseli, 0, w);
+        BufferedImage rezultat = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
+        rezultat.setRGB(0, 0, w, h, pikseli, 0, w);
+        return rezultat;
+    }
+
+    // Tačka miša kao udeo prikazane slike (0 do 1), za crtanje i nalepnice
     private double[] udeoSlike(double x, double y) {
         Bounds slika = prikaz.localToParent(prikaz.getLayoutBounds());
         return new double[]{(x - slika.getMinX()) / slika.getWidth(), (y - slika.getMinY()) / slika.getHeight()};
@@ -1849,9 +2032,8 @@ public class Main extends Application {
 
     private void nastaviPotez(double x, double y) {
         double[] udeo = udeoSlike(x, y);
-        boolean linija = alati.getSelectedToggle() != null && alati.getSelectedToggle().getUserData() == Alat.LINIJA;
-        // Prava linija ima samo početnu i krajnju tačku
-        if (linija && trenutneTackeX.size() == 2) {
+        // Linija, strelica i oblici imaju samo početnu i krajnju tačku
+        if (izabranaAlatka().dveTacke() && trenutneTackeX.size() == 2) {
             trenutneTackeX.set(1, udeo[0]);
             trenutneTackeY.set(1, udeo[1]);
         } else {
@@ -1866,22 +2048,169 @@ public class Main extends Application {
         Potez potez = trenutniPotez();
         trenutneTackeX = null;
         trenutneTackeY = null;
-        Slojevi s = slojevi();
-        promeniSlojeve(new Slojevi(saDodatim(s.potezi(), potez), s.tekstovi(), s.oci()));
+        promeniSlojeve(slojevi().saPotezima(saDodatim(slojevi().potezi(), potez)));
     }
 
     private void obrisiPoslednjiPotez() {
-        Slojevi s = slojevi();
-        if (!s.potezi().isEmpty()) {
-            promeniSlojeve(new Slojevi(List.copyOf(s.potezi().subList(0, s.potezi().size() - 1)),
-                    s.tekstovi(), s.oci()));
+        List<Potez> potezi = slojevi().potezi();
+        if (!potezi.isEmpty()) {
+            promeniSlojeve(slojevi().saPotezima(potezi.subList(0, potezi.size() - 1)));
         }
     }
 
     private void obrisiCrtez() {
-        Slojevi s = slojevi();
-        if (!s.potezi().isEmpty()) {
-            promeniSlojeve(new Slojevi(List.of(), s.tekstovi(), s.oci()));
+        if (!slojevi().potezi().isEmpty()) {
+            promeniSlojeve(slojevi().saPotezima(List.of()));
+        }
+    }
+
+    // ===== Nalepnice =====
+
+    private void dodajNalepnicu(Stage prozor) {
+        if (prikaz.getImage() == null) {
+            return;
+        }
+        FileChooser izbor = new FileChooser();
+        izbor.setTitle("Izaberi sliku za nalepnicu");
+        izbor.getExtensionFilters().add(
+                new FileChooser.ExtensionFilter("Slike", "*.png", "*.jpg", "*.jpeg", "*.bmp", "*.gif"));
+        postaviPocetniFolder(izbor);
+        File fajl = izbor.showOpenDialog(prozor);
+        if (fajl == null) {
+            return;
+        }
+        Image slika = new Image(fajl.toURI().toString());
+        if (slika.isError()) {
+            prikaziGresku(prozor, "Slika ne može da se otvori:\n" + fajl.getAbsolutePath());
+            return;
+        }
+        // Nova nalepnica je na sredini, četvrtina širine slike
+        Nalepnica nova = new Nalepnica(slika, fajl.getName(), 0.5, 0.5, 0.25, 1, 0);
+        promeniSlojeve(slojevi().saNalepnicama(saDodatim(slojevi().nalepnice(), nova)));
+        izaberiNalepnicu(slojevi().nalepnice().size() - 1);
+    }
+
+    // Klizač podešavanja (ne izmene slike) dobija sačuvanu vrednost i pamti svaku promenu
+    private void zapamtiKlizac(Slider klizac, String kljuc) {
+        klizac.setValue(podesavanjaPrograma.getDouble(kljuc, klizac.getValue()));
+        klizac.valueProperty().addListener((o, s, n) -> podesavanjaPrograma.putDouble(kljuc, n.doubleValue()));
+    }
+
+    private void poveziKlizacNalepnice(Slider klizac, BiFunction<Nalepnica, Double, Nalepnica> izmena) {
+        klizac.valueChangingProperty().addListener((o, s, menjaSe) -> {
+            if (menjaSe) {
+                verzijaPokreta = -1;
+            }
+        });
+        klizac.valueProperty().addListener((o, s, n) -> {
+            if (!postavljaKlizaceNalepnice) {
+                izmeniNalepnicu(nal -> izmena.apply(nal, n.doubleValue()), klizac.isValueChanging());
+            }
+        });
+    }
+
+    // Postavlja klizače nalepnice na vrednosti izabrane nalepnice (bez menjanja slike)
+    private void izaberiNalepnicu(int indeks) {
+        izabranaNalepnica = indeks;
+        List<Nalepnica> nalepnice = slojevi().nalepnice();
+        boolean ima = indeks >= 0 && indeks < nalepnice.size();
+        postavljaKlizaceNalepnice = true;
+        if (ima) {
+            Nalepnica n = nalepnice.get(indeks);
+            velicinaNalepnice.setValue(n.sirina());
+            neprovidnostNalepnice.setValue(n.neprovidnost());
+            rotacijaNalepnice.setValue(n.rotacija());
+        }
+        postavljaKlizaceNalepnice = false;
+        izabranaNalepnicaOznaka.setText(ima ? "Izabrana: " + nalepnice.get(indeks).ime() : "Nijedna nalepnica nije izabrana");
+        for (Node klizac : List.of(velicinaNalepnice, neprovidnostNalepnice, rotacijaNalepnice)) {
+            klizac.setDisable(!ima);
+        }
+    }
+
+    // Menja izabranu nalepnicu. Prva promena u jednom pokretu (prevlačenje mišem ili klizača)
+    // pravi novu verziju (jedan korak za Undo), a sledeće promene u istom pokretu menjaju tu istu verziju.
+    private void izmeniNalepnicu(UnaryOperator<Nalepnica> izmena, boolean nastavakPokreta) {
+        List<Nalepnica> nalepnice = new ArrayList<>(slojevi().nalepnice());
+        if (izabranaNalepnica < 0 || izabranaNalepnica >= nalepnice.size()) {
+            return;
+        }
+        nalepnice.set(izabranaNalepnica, izmena.apply(nalepnice.get(izabranaNalepnica)));
+        Slojevi novi = slojevi().saNalepnicama(nalepnice);
+        int trenutna = (int) verzijaSlojeva.getValue();
+        if (nastavakPokreta && verzijaPokreta == trenutna && trenutna == verzijeSlojeva.size() - 1) {
+            verzijeSlojeva.set(trenutna, novi);
+            osveziDodatke();
+        } else {
+            promeniSlojeve(novi);
+            verzijaPokreta = nastavakPokreta ? (int) verzijaSlojeva.getValue() : -1;
+        }
+    }
+
+    private void obrisiNalepnicu() {
+        List<Nalepnica> nalepnice = new ArrayList<>(slojevi().nalepnice());
+        if (izabranaNalepnica >= 0 && izabranaNalepnica < nalepnice.size()) {
+            nalepnice.remove(izabranaNalepnica);
+            promeniSlojeve(slojevi().saNalepnicama(nalepnice));
+            izaberiNalepnicu(-1);
+        }
+    }
+
+    private void obrisiSveNalepnice() {
+        if (!slojevi().nalepnice().isEmpty()) {
+            promeniSlojeve(slojevi().saNalepnicama(List.of()));
+            izaberiNalepnicu(-1);
+        }
+    }
+
+    // Redni broj nalepnice ispod tačke miša (gornja ima prednost), ili -1
+    private int nalepnicaIspod(double x, double y) {
+        for (int i = cvoroviNalepnica.size() - 1; i >= 0; i--) {
+            ImageView v = cvoroviNalepnica.get(i);
+            if (v.isVisible() && v.getLayoutBounds().contains(v.parentToLocal(x, y))) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    // Postavlja nalepnice preko slike na glavnom prozoru
+    private void osveziNalepnice(Bounds slika, boolean vidljivo) {
+        slojNalepnica.getChildren().clear();
+        cvoroviNalepnica.clear();
+        for (Nalepnica n : slojevi().nalepnice()) {
+            ImageView v = new ImageView(n.slika());
+            double sirina = n.sirina() * slika.getWidth();
+            double visina = n.visina(slika.getWidth());
+            v.setFitWidth(sirina);
+            v.setFitHeight(visina);
+            v.setX(slika.getMinX() + n.x() * slika.getWidth() - sirina / 2);
+            v.setY(slika.getMinY() + n.y() * slika.getHeight() - visina / 2);
+            v.setRotate(n.rotacija());
+            v.setOpacity(n.neprovidnost());
+            v.setVisible(vidljivo);
+            slojNalepnica.getChildren().add(v);
+            cvoroviNalepnica.add(v);
+        }
+    }
+
+    // Crta nalepnice na gotovu sliku, isto kao na prikazu
+    private static void nacrtajNalepnice(BufferedImage slika, List<Nalepnica> nalepnice) {
+        int w = slika.getWidth();
+        int h = slika.getHeight();
+        for (Nalepnica n : nalepnice) {
+            int sirina = Math.max(1, (int) Math.round(n.sirina() * w));
+            int visina = Math.max(1, (int) Math.round(n.visina(w)));
+            // Prvo se postepeno smanji (lepše od jednog velikog koraka), pa se nacrta tačno na meru
+            BufferedImage izvor = smanji(uAwtSliku(n.slika()), Math.max(sirina, visina));
+            Graphics2D g = slika.createGraphics();
+            g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+            g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
+            g.setComposite(AlphaComposite.getInstance(AlphaComposite.SRC_OVER, (float) n.neprovidnost()));
+            g.translate(n.x() * w, n.y() * h);
+            g.rotate(Math.toRadians(n.rotacija()));
+            g.drawImage(izvor, -sirina / 2, -visina / 2, sirina, visina, null);
+            g.dispose();
         }
     }
 
@@ -1896,7 +2225,7 @@ public class Main extends Application {
         }
         Slojevi s = slojevi();
         bezBelezenja = true;
-        promeniSlojeve(new Slojevi(s.potezi(), saDodatim(s.tekstovi(), aktivni), s.oci()));
+        promeniSlojeve(s.saTekstovima(saDodatim(s.tekstovi(), aktivni)));
         tekstPolje.setText("");
         potvrdiTekst();
         bezBelezenja = false;
@@ -1915,7 +2244,7 @@ public class Main extends Application {
             tekstovi.add(aktivni);
         }
         bezBelezenja = true;
-        promeniSlojeve(new Slojevi(s.potezi(), List.copyOf(tekstovi), s.oci()));
+        promeniSlojeve(s.saTekstovima(tekstovi));
         tekstPolje.setText(izabran.tekst());
         potvrdiTekst();
         fontTeksta.setValue(Math.max(0, FONTOVI.indexOf(izabran.font())));
@@ -1937,7 +2266,7 @@ public class Main extends Application {
     private void obrisiSveTekstove() {
         Slojevi s = slojevi();
         bezBelezenja = true;
-        promeniSlojeve(new Slojevi(s.potezi(), List.of(), s.oci()));
+        promeniSlojeve(s.saTekstovima(List.of()));
         tekstPolje.setText("");
         potvrdiTekst();
         bezBelezenja = false;
@@ -1973,13 +2302,13 @@ public class Main extends Application {
         // Poluprečnik je zadat u pikselima ekrana; deli se uvećanjem da bi bio u pikselima neuvećane slike
         double poluprecnik = velicinaOka.getValue() / uvecanje / sirina * sirinaDela;
         Slojevi s = slojevi();
-        promeniSlojeve(new Slojevi(s.potezi(), s.tekstovi(), saDodatim(s.oci(), new CrvenoOko(ux, uy, poluprecnik))));
+        promeniSlojeve(s.saOcima(saDodatim(s.oci(), new CrvenoOko(ux, uy, poluprecnik))));
     }
 
     private void ponistiCrveneOci() {
         Slojevi s = slojevi();
         if (!s.oci().isEmpty()) {
-            promeniSlojeve(new Slojevi(s.potezi(), s.tekstovi(), List.of()));
+            promeniSlojeve(s.saOcima(List.of()));
         }
     }
 

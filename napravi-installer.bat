@@ -5,7 +5,7 @@ rem Kod svakog novog izdanja povecajte VERZIJA, da bi instaler pravilno nadograd
 setlocal
 cd /d "%~dp0"
 
-set VERZIJA=2.0
+set VERZIJA=2.1
 
 if exist "%ProgramFiles(x86)%\WiX Toolset v3.14\bin" set "PATH=%ProgramFiles(x86)%\WiX Toolset v3.14\bin;%PATH%"
 if exist "%USERPROFILE%\tools\wix314" set "PATH=%USERPROFILE%\tools\wix314;%PATH%"
