@@ -38,6 +38,7 @@ import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
 import javafx.scene.paint.Color;
 import javafx.stage.FileChooser;
+import javafx.stage.Screen;
 import javafx.stage.Stage;
 
 import javax.imageio.ImageIO;
@@ -194,10 +195,14 @@ public class Main extends Application {
         dodajPrecice(scenaKomandi);
         komande.setScene(scenaKomandi);
 
-        // Dugme koje ponovo prikazuje prozor sa komandama ako je zatvoren
-        Button prikaziKomande = new Button("Komande");
+        // Dugme koje otvara prozor sa komandama (nije vidljiv pri pokretanju)
+        Button prikaziKomande = new Button("Otvori Komande");
         prikaziKomande.setMaxWidth(Double.MAX_VALUE);
         prikaziKomande.setOnAction(e -> {
+            // Desno od glavnog prozora, na razmaku od 5 mm
+            double razmak = 5 / 25.4 * Screen.getPrimary().getDpi();
+            komande.setX(prozor.getX() + prozor.getWidth() + razmak);
+            komande.setY(prozor.getY());
             komande.show();
             komande.toFront();
         });
@@ -235,12 +240,9 @@ public class Main extends Application {
         prozor.setScene(scena);
         prozor.show();
 
-        // Prozor sa komandama je u desnom delu glavnog prozora i iste je visine kao on
-        komande.setX(prozor.getX() + prozor.getWidth() - 330);
-        komande.setY(prozor.getY());
+        // Prozor sa komandama je iste visine kao glavni prozor
         komande.setHeight(prozor.getHeight());
         prozor.heightProperty().addListener((o, s, n) -> komande.setHeight(n.doubleValue()));
-        komande.show();
     }
 
     // Pravi lanac efekata od trenutnih vrednosti klizača. Filteri čija je vrednost 0 se preskaču.
