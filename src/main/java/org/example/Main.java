@@ -2,7 +2,9 @@ package org.example;
 
 import javafx.application.Application;
 import javafx.geometry.Insets;
+import javafx.geometry.Point2D;
 import javafx.geometry.Rectangle2D;
+import javafx.scene.Cursor;
 import javafx.scene.Node;
 import javafx.scene.Scene;
 import javafx.scene.SnapshotParameters;
@@ -35,10 +37,12 @@ import javafx.scene.input.KeyCodeCombination;
 import javafx.scene.input.KeyCombination;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
+import javafx.scene.layout.Pane;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
 import javafx.scene.paint.Color;
+import javafx.scene.shape.Rectangle;
 import javafx.stage.FileChooser;
 import javafx.stage.Screen;
 import javafx.stage.Stage;
@@ -51,6 +55,7 @@ import java.util.ArrayDeque;
 import java.util.Arrays;
 import java.util.Deque;
 import java.util.List;
+import java.util.Map;
 import java.util.prefs.Preferences;
 
 public class Main extends Application {
@@ -96,6 +101,21 @@ public class Main extends Application {
     private final Slider rotacija = new Slider(0, 3, 0);
     private final Slider ogledaloLevoDesno = new Slider(0, 1, 0);
     private final Slider ogledaloGoreDole = new Slider(0, 1, 0);
+    // Isecanje: koliki se deo slike (od 0 do 1) odseca sa svake strane, u neokrenutoj slici
+    private final Slider isecanjeLevo = new Slider(0, 1, 0);
+    private final Slider isecanjeGore = new Slider(0, 1, 0);
+    private final Slider isecanjeDesno = new Slider(0, 1, 0);
+    private final Slider isecanjeDole = new Slider(0, 1, 0);
+    // Gotovi stilovi ne diraju geometriju i isecanje
+    private final List<Slider> geometrijskiKlizaci = List.of(
+            rotacija, ogledaloLevoDesno, ogledaloGoreDole,
+            isecanjeLevo, isecanjeGore, isecanjeDesno, isecanjeDole);
+    // true dok korisnik mišem bira deo slike za isecanje
+    private boolean biraIsecak = false;
+
+    // Svetla i senke: posvetljavanje tamnih i potamnjivanje svetlih delova (0 = bez promene)
+    private final Slider senke = new Slider(0, 1, 0);
+    private final Slider svetla = new Slider(0, 1, 0);
 
     // Umetnički filteri menjaju same piksele slike (pre ostalih efekata), 0 znači isključeno.
     // pikselizacija: veličina kvadrata u pikselima prikaza
@@ -105,8 +125,10 @@ public class Main extends Application {
     private final Slider crtez = new Slider(0, 1, 0);
     private final Slider uljanaSlika = new Slider(0, 1, 0);
     private final Slider akvarel = new Slider(0, 1, 0);
-    private final List<Slider> umetnickiKlizaci =
-            List.of(pikselizacija, posterizacija, reljef, crtez, uljanaSlika, akvarel);
+    // Klizači koji menjaju same piksele slike (isecanje, svetla i senke, umetnički filteri)
+    private final List<Slider> klizaciPiksela = List.of(
+            isecanjeLevo, isecanjeGore, isecanjeDesno, isecanjeDole, senke, svetla,
+            pikselizacija, posterizacija, reljef, crtez, uljanaSlika, akvarel);
 
     // Svi klizači čije se vrednosti pamte u istoriji (novi klizač treba dodati ovde)
     private final List<Slider> sviKlizaci = List.of(
@@ -115,7 +137,8 @@ public class Main extends Application {
             ostrina, vinjeta, zrno,
             sepija, sjaj, bloom, zamucenje, zamucenjePokretom, ugaoPokreta,
             rotacija, ogledaloLevoDesno, ogledaloGoreDole,
-            pikselizacija, posterizacija, reljef, crtez, uljanaSlika, akvarel);
+            pikselizacija, posterizacija, reljef, crtez, uljanaSlika, akvarel,
+            senke, svetla, isecanjeLevo, isecanjeGore, isecanjeDesno, isecanjeDole);
 
     // Učitana slika u punoj rezoluciji (koristi se pri čuvanju) i njena umanjena kopija
     // za prikaz, da umetnički filteri rade brzo i na velikim slikama
@@ -145,7 +168,7 @@ public class Main extends Application {
             klizac.valueProperty().addListener((o, s, n) -> osveziEfekat());
             pratiPromene(klizac);
         }
-        for (Slider klizac : umetnickiKlizaci) {
+        for (Slider klizac : klizaciPiksela) {
             klizac.valueProperty().addListener((o, s, n) -> osveziPregled());
         }
 
@@ -205,12 +228,22 @@ public class Main extends Application {
             }
         });
 
+        // Isecanje: posle klika na dugme korisnik mišem prevlači pravougaonik preko slike
+        Button iseci = napraviDugme("Iseci (prevuci mišem preko slike)", () -> {});
+        iseci.setOnAction(e -> {
+            biraIsecak = !biraIsecak && prikaz.getImage() != null;
+            iseci.setText(biraIsecak ? "Otkaži isecanje" : "Iseci (prevuci mišem preko slike)");
+        });
+
         // Poseban prozor sa karticama za sve komande, efekte i filtere.
         // Nova grupa komandi se dodaje kao nova kartica preko napraviKarticu(...)
         TabPane kartice = new TabPane(
                 napraviKarticu("Svetlo",
                         new Label("Svetlina"), svetlina,
-                        new Label("Kontrast"), kontrast),
+                        new Label("Kontrast"), kontrast,
+                        new Separator(),
+                        new Label("Senke (posvetli tamne delove)"), senke,
+                        new Label("Svetla (potamni svetle delove)"), svetla),
                 napraviKarticu("Boja",
                         new Label("Zasićenost"), zasicenost,
                         new Label("Nijansa (Hue)"), nijansa,
@@ -239,7 +272,12 @@ public class Main extends Application {
                         new Separator(),
                         new Label("Okretanje (ogledalo)"),
                         napraviDugme("Levo - desno", () -> ogledaloLevoDesno.setValue(1 - ogledaloLevoDesno.getValue())),
-                        napraviDugme("Gore - dole", () -> ogledaloGoreDole.setValue(1 - ogledaloGoreDole.getValue()))),
+                        napraviDugme("Gore - dole", () -> ogledaloGoreDole.setValue(1 - ogledaloGoreDole.getValue())),
+                        new Separator(),
+                        new Label("Isecanje"),
+                        iseci,
+                        napraviDugme("Vrati celu sliku", () -> postaviVise(Map.of(
+                                isecanjeLevo, 0.0, isecanjeGore, 0.0, isecanjeDesno, 0.0, isecanjeDole, 0.0)))),
                 napraviKarticu("Umetnički",
                         new Label("Pikselizacija"), pikselizacija,
                         new Label("Posterizacija"), posterizacija,
@@ -247,7 +285,25 @@ public class Main extends Application {
                         new Label("Crtež olovkom"), crtez,
                         new Separator(),
                         new Label("Uljana slika"), uljanaSlika,
-                        new Label("Akvarel"), akvarel));
+                        new Label("Akvarel"), akvarel),
+                // Svaki stil prvo vraća sve filtere na 0, pa postavlja svoje vrednosti
+                napraviKarticu("Stilovi",
+                        napraviDugme("Stara fotografija", () -> primeniStil(Map.of(
+                                sepija, 0.8, zrno, 0.4, vinjeta, 0.6, kontrast, -0.1))),
+                        napraviDugme("Crno-belo", () -> primeniStil(Map.of(
+                                zasicenost, -1.0, kontrast, 0.2))),
+                        napraviDugme("Toplo leto", () -> primeniStil(Map.of(
+                                temperatura, 0.5, zasicenost, 0.2, svetlina, 0.05))),
+                        napraviDugme("Hladna zima", () -> primeniStil(Map.of(
+                                temperatura, -0.5, zasicenost, -0.2, svetla, 0.3))),
+                        napraviDugme("Dramatično", () -> primeniStil(Map.of(
+                                kontrast, 0.4, ostrina, 0.6, vinjeta, 0.5, zasicenost, -0.2))),
+                        napraviDugme("Protiv svetla", () -> primeniStil(Map.of(
+                                senke, 0.8, svetla, 0.4))),
+                        napraviDugme("Strip", () -> primeniStil(Map.of(
+                                posterizacija, 0.7, zasicenost, 0.4, ostrina, 0.5))),
+                        new Separator(),
+                        napraviDugme("Bez stila", () -> primeniStil(Map.of()))));
 
         Stage komande = new Stage();
         komande.initOwner(prozor);
@@ -287,9 +343,54 @@ public class Main extends Application {
         kontrole.setPrefWidth(180);
 
         // Prostor za prikaz fotografije
-        StackPane centar = new StackPane(prikaz);
+        // Iznad slike je providan sloj na kome se crta pravougaonik za isecanje
+        Rectangle okvirIsecka = new Rectangle();
+        okvirIsecka.setFill(Color.color(1, 1, 1, 0.15));
+        okvirIsecka.setStroke(Color.WHITE);
+        okvirIsecka.getStrokeDashArray().addAll(6.0, 4.0);
+        okvirIsecka.setVisible(false);
+        Pane slojIsecka = new Pane(okvirIsecka);
+        slojIsecka.setMouseTransparent(true);
+
+        StackPane centar = new StackPane(prikaz, slojIsecka);
         centar.setStyle("-fx-background-color: #2b2b2b;");
         centar.setMinSize(0, 0);
+
+        double[] pocetak = new double[2];
+        centar.setOnMousePressed(e -> {
+            if (biraIsecak) {
+                pocetak[0] = e.getX();
+                pocetak[1] = e.getY();
+                okvirIsecka.setX(e.getX());
+                okvirIsecka.setY(e.getY());
+                okvirIsecka.setWidth(0);
+                okvirIsecka.setHeight(0);
+                okvirIsecka.setVisible(true);
+            }
+        });
+        centar.setOnMouseDragged(e -> {
+            if (biraIsecak) {
+                okvirIsecka.setX(Math.min(pocetak[0], e.getX()));
+                okvirIsecka.setY(Math.min(pocetak[1], e.getY()));
+                okvirIsecka.setWidth(Math.abs(e.getX() - pocetak[0]));
+                okvirIsecka.setHeight(Math.abs(e.getY() - pocetak[1]));
+            }
+        });
+        centar.setOnMouseReleased(e -> {
+            if (!biraIsecak) {
+                return;
+            }
+            okvirIsecka.setVisible(false);
+            // Premalo prevlačenje (običan klik) se ne računa, može se pokušati ponovo
+            if (Math.abs(e.getX() - pocetak[0]) < 5 || Math.abs(e.getY() - pocetak[1]) < 5) {
+                return;
+            }
+            biraIsecak = false;
+            iseci.setText("Iseci (prevuci mišem preko slike)");
+            iseciNaOkvir(pocetak[0], pocetak[1], e.getX(), e.getY());
+        });
+        // Dok traje biranje isecka, kursor je krstić
+        centar.setOnMouseMoved(e -> centar.setCursor(biraIsecak ? Cursor.CROSSHAIR : Cursor.DEFAULT));
 
         prikaz.setPreserveRatio(true);
         // RGB efekat zavisi od veličine prikaza, pa ga osvežavamo i kad se prozor menja
@@ -482,20 +583,103 @@ public class Main extends Application {
             return;
         }
         double sirinaPrikaza = prikaz.getLayoutBounds().getWidth();
-        double razmera = sirinaPrikaza > 0 ? pregled.getWidth() / sirinaPrikaza : 1;
+        double razmera = sirinaPrikaza > 0 ? sirinaIsecka(pregled) / sirinaPrikaza : 1;
         prikaz.setImage(obradiPiksele(pregled, razmera));
     }
 
-    // Umetnički filteri, redom: pikselizacija, posterizacija, uljana slika, akvarel, reljef, crtež olovkom.
+    // Širina slike u pikselima posle isecanja
+    private double sirinaIsecka(Image slika) {
+        return slika.getWidth() * Math.max(0, 1 - isecanjeLevo.getValue() - isecanjeDesno.getValue());
+    }
+
+    // Pretvara pravougaonik nacrtan mišem (u koordinatama prostora za prikaz) u isecanje.
+    // parentToLocal uračunava i rotaciju i ogledalo, pa se dobijaju koordinate u neokrenutoj slici.
+    private void iseciNaOkvir(double x1, double y1, double x2, double y2) {
+        double sirina = prikaz.getLayoutBounds().getWidth();
+        double visina = prikaz.getLayoutBounds().getHeight();
+        if (sirina <= 0 || visina <= 0) {
+            return;
+        }
+        Point2D a = prikaz.parentToLocal(x1, y1);
+        Point2D b = prikaz.parentToLocal(x2, y2);
+        // Udeo trenutno prikazanog dela slike, ograničen na samu sliku
+        double odX = Math.max(0, Math.min(1, Math.min(a.getX(), b.getX()) / sirina));
+        double doX = Math.max(0, Math.min(1, Math.max(a.getX(), b.getX()) / sirina));
+        double odY = Math.max(0, Math.min(1, Math.min(a.getY(), b.getY()) / visina));
+        double doY = Math.max(0, Math.min(1, Math.max(a.getY(), b.getY()) / visina));
+        if (doX - odX < 0.01 || doY - odY < 0.01) {
+            return;
+        }
+        // Novi isečak je deo već isečenog dela, pa se preračunava u udeo cele slike
+        double levo = isecanjeLevo.getValue();
+        double gore = isecanjeGore.getValue();
+        double sirinaDela = 1 - levo - isecanjeDesno.getValue();
+        double visinaDela = 1 - gore - isecanjeDole.getValue();
+        postaviVise(Map.of(
+                isecanjeLevo, levo + odX * sirinaDela,
+                isecanjeDesno, isecanjeDesno.getValue() + (1 - doX) * sirinaDela,
+                isecanjeGore, gore + odY * visinaDela,
+                isecanjeDole, isecanjeDole.getValue() + (1 - doY) * visinaDela));
+    }
+
+    // Menja više klizača odjednom, kao jedan korak u istoriji (jedan Undo)
+    private void postaviVise(Map<Slider, Double> vrednosti) {
+        bezBelezenja = true;
+        vrednosti.forEach(Slider::setValue);
+        bezBelezenja = false;
+        zabeleziStanje();
+    }
+
+    // Gotov stil: svi klizači osim geometrije i isecanja se vraćaju na 0, pa se postavljaju vrednosti stila
+    private void primeniStil(Map<Slider, Double> stil) {
+        bezBelezenja = true;
+        for (Slider klizac : sviKlizaci) {
+            if (!geometrijskiKlizaci.contains(klizac)) {
+                klizac.setValue(stil.getOrDefault(klizac, 0.0));
+            }
+        }
+        bezBelezenja = false;
+        zabeleziStanje();
+    }
+
+    // Obrada piksela, redom: isecanje, svetla i senke, pikselizacija, posterizacija,
+    // uljana slika, akvarel, reljef, crtež olovkom.
     // razmera: koliko je puta slika veća od prikaza (da filter izgleda isto na prikazu i u sačuvanoj slici)
     private Image obradiPiksele(Image izvor, double razmera) {
-        if (umetnickiKlizaci.stream().allMatch(k -> k.getValue() == 0)) {
+        if (klizaciPiksela.stream().allMatch(k -> k.getValue() == 0)) {
             return izvor;
         }
-        int w = (int) izvor.getWidth();
-        int h = (int) izvor.getHeight();
+        // Isecanje: čita se samo izabrani deo slike
+        int ukupnoW = (int) izvor.getWidth();
+        int ukupnoH = (int) izvor.getHeight();
+        int x0 = Math.min(ukupnoW - 1, (int) Math.round(isecanjeLevo.getValue() * ukupnoW));
+        int y0 = Math.min(ukupnoH - 1, (int) Math.round(isecanjeGore.getValue() * ukupnoH));
+        int w = Math.max(1, Math.min(ukupnoW - x0, (int) Math.round((1 - isecanjeDesno.getValue()) * ukupnoW) - x0));
+        int h = Math.max(1, Math.min(ukupnoH - y0, (int) Math.round((1 - isecanjeDole.getValue()) * ukupnoH) - y0));
         int[] p = new int[w * h];
-        izvor.getPixelReader().getPixels(0, 0, w, h, PixelFormat.getIntArgbInstance(), p, 0, w);
+        izvor.getPixelReader().getPixels(x0, y0, w, h, PixelFormat.getIntArgbInstance(), p, 0, w);
+
+        // Svetla i senke: menja se osvetljenost piksela, a boje se skaliraju istim faktorom.
+        // Senke najviše posvetljavaju oko 1/3 osvetljenosti, svetla najviše tamne oko 2/3.
+        if (senke.getValue() > 0 || svetla.getValue() > 0) {
+            for (int i = 0; i < p.length; i++) {
+                int c = p[i];
+                int r = (c >> 16) & 0xFF;
+                int g = (c >> 8) & 0xFF;
+                int b = c & 0xFF;
+                double l = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+                if (l <= 0) {
+                    continue;
+                }
+                double cilj = l + senke.getValue() * 2 * l * (1 - l) * (1 - l)
+                        - svetla.getValue() * 2 * l * l * (1 - l);
+                double faktor = cilj / l;
+                p[i] = (c & 0xFF000000)
+                        | (int) Math.min(255, Math.round(r * faktor)) << 16
+                        | (int) Math.min(255, Math.round(g * faktor)) << 8
+                        | (int) Math.min(255, Math.round(b * faktor));
+            }
+        }
 
         // Pikselizacija: svaki kvadrat dobija prosečnu boju svojih piksela
         int blok = (int) Math.round(pikselizacija.getValue() * razmera);
@@ -900,15 +1084,16 @@ public class Main extends Application {
 
         // Efekte primenjujemo na sliku u punoj rezoluciji, ne na umanjeni prikaz
         double sirinaPrikaza = prikaz.getLayoutBounds().getWidth();
-        double razmera = sirinaPrikaza > 0 ? original.getWidth() / sirinaPrikaza : 1;
-        ImageView puna = new ImageView(obradiPiksele(original, razmera));
-        puna.setEffect(napraviEfekat(original.getWidth(), original.getHeight(), razmera));
+        double razmera = sirinaPrikaza > 0 ? sirinaIsecka(original) / sirinaPrikaza : 1;
+        Image obradjena = obradiPiksele(original, razmera);
+        ImageView puna = new ImageView(obradjena);
+        puna.setEffect(napraviEfekat(obradjena.getWidth(), obradjena.getHeight(), razmera));
 
         SnapshotParameters parametri = new SnapshotParameters();
         // JPG ne podržava providnost, pa providne delove popunjavamo belom bojom
         parametri.setFill(jeJpg ? Color.WHITE : Color.TRANSPARENT);
         // Zamućenje širi sliku preko ivica; snimamo samo deo veličine originala
-        parametri.setViewport(new Rectangle2D(0, 0, original.getWidth(), original.getHeight()));
+        parametri.setViewport(new Rectangle2D(0, 0, obradjena.getWidth(), obradjena.getHeight()));
         WritableImage snimak = puna.snapshot(parametri, null);
 
         try {
