@@ -2,8 +2,11 @@ package org.example;
 
 import javafx.application.Application;
 import javafx.application.Platform;
+import javafx.beans.binding.Bindings;
+import javafx.collections.FXCollections;
 import javafx.geometry.Insets;
 import javafx.geometry.Point2D;
+import javafx.geometry.Pos;
 import javafx.geometry.Rectangle2D;
 import javafx.scene.Cursor;
 import javafx.scene.Node;
@@ -14,13 +17,19 @@ import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
 import javafx.scene.control.ButtonType;
+import javafx.scene.control.ChoiceBox;
 import javafx.scene.control.Label;
+import javafx.scene.control.MenuButton;
+import javafx.scene.control.MenuItem;
+import javafx.scene.control.ProgressIndicator;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.Separator;
+import javafx.scene.control.SeparatorMenuItem;
 import javafx.scene.control.Slider;
 import javafx.scene.control.Tab;
 import javafx.scene.control.TabPane;
 import javafx.scene.control.TextInputDialog;
+import javafx.scene.control.Tooltip;
 import javafx.scene.effect.Blend;
 import javafx.scene.effect.BlendMode;
 import javafx.scene.effect.Bloom;
@@ -40,6 +49,7 @@ import javafx.scene.image.WritableImage;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.KeyCodeCombination;
 import javafx.scene.input.KeyCombination;
+import javafx.scene.input.TransferMode;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Pane;
@@ -49,21 +59,34 @@ import javafx.scene.layout.VBox;
 import javafx.scene.paint.Color;
 import javafx.scene.shape.Rectangle;
 import javafx.stage.FileChooser;
+import javafx.stage.Modality;
 import javafx.stage.Screen;
 import javafx.stage.Stage;
+import javafx.stage.StageStyle;
 import javafx.stage.Window;
+import javafx.util.StringConverter;
 
+import javax.imageio.IIOImage;
 import javax.imageio.ImageIO;
+import javax.imageio.ImageWriteParam;
+import javax.imageio.ImageWriter;
+import javax.imageio.stream.ImageOutputStream;
+import java.awt.Graphics2D;
+import java.awt.RenderingHints;
 import java.awt.image.BufferedImage;
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.Files;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.FutureTask;
 import java.util.prefs.BackingStoreException;
 import java.util.prefs.Preferences;
 
@@ -73,6 +96,21 @@ public class Main extends Application {
 
     // Trajno čuvanje podešavanja programa (npr. poslednji korišćeni folder)
     private static final String KLJUC_FOLDER = "poslednjiFolder";
+    private static final String KLJUC_NEDAVNE = "nedavneSlike";
+    private static final String KLJUC_NAJVECA_STRANA = "najvecaStranaPriCuvanju";
+    private static final String KLJUC_KVALITET_JPG = "kvalitetJpg";
+    private static final int NAJVISE_NEDAVNIH = 8;
+    private static final List<String> PODRZANE_EKSTENZIJE = List.of(".jpg", ".jpeg", ".png", ".bmp", ".gif");
+
+    private Stage glavniProzor;
+    // Meni sa poslednjih nekoliko otvorenih slika, na glavnom prozoru ispod "Otvori sliku"
+    private final MenuButton nedavneDugme = new MenuButton("Nedavne slike");
+
+    // Podešavanja čuvanja: najveća duža strana slike u pikselima (0 = originalna veličina) i kvalitet JPG-a
+    private final ChoiceBox<Integer> najvecaStrana =
+            new ChoiceBox<>(FXCollections.observableArrayList(0, 3840, 2560, 1920, 1280, 800));
+    private final Slider kvalitetJpg = new Slider(0.5, 1, 0.9);
+    private final Label oznakaKvaliteta = new Label();
     private final Preferences podesavanjaPrograma = Preferences.userNodeForPackage(Main.class);
 
     // Podešavanje boja (od -1 do 1, početno 0)
@@ -198,10 +236,37 @@ public class Main extends Application {
 
     @Override
     public void start(Stage prozor) {
+        glavniProzor = prozor;
         // Dugme za otvaranje slike
         Button otvori = new Button("Otvori sliku");
         otvori.setMaxWidth(Double.MAX_VALUE);
         otvori.setOnAction(e -> otvoriSliku(prozor));
+        nedavneDugme.setMaxWidth(Double.MAX_VALUE);
+        osveziNedavne();
+
+        // Podešavanja čuvanja (kartica "Čuvanje"); nisu deo izmena slike, pa nisu u istoriji,
+        // ali se pamte i posle zatvaranja programa
+        najvecaStrana.setConverter(new StringConverter<>() {
+            @Override
+            public String toString(Integer piksela) {
+                return piksela == null || piksela == 0 ? "Originalna veličina" : "Duža strana najviše " + piksela + " px";
+            }
+
+            @Override
+            public Integer fromString(String tekst) {
+                return null;
+            }
+        });
+        int zapamcenaStrana = podesavanjaPrograma.getInt(KLJUC_NAJVECA_STRANA, 0);
+        najvecaStrana.setValue(najvecaStrana.getItems().contains(zapamcenaStrana) ? zapamcenaStrana : 0);
+        najvecaStrana.setMaxWidth(Double.MAX_VALUE);
+        najvecaStrana.valueProperty().addListener((o, s, n) -> podesavanjaPrograma.putInt(KLJUC_NAJVECA_STRANA, n));
+        kvalitetJpg.setValue(podesavanjaPrograma.getDouble(KLJUC_KVALITET_JPG, 0.9));
+        oznakaKvaliteta.textProperty().bind(Bindings.createStringBinding(
+                () -> "Kvalitet JPG slike: " + Math.round(kvalitetJpg.getValue() * 100) + "%",
+                kvalitetJpg.valueProperty()));
+        kvalitetJpg.valueProperty().addListener((o, s, n) ->
+                podesavanjaPrograma.putDouble(KLJUC_KVALITET_JPG, n.doubleValue()));
 
         // Svaka promena klizača osvežava prikaz i beleži se za Undo/Redo
         for (Slider klizac : sviKlizaci) {
@@ -347,7 +412,12 @@ public class Main extends Application {
                         new Separator(),
                         new Label("Moji stilovi"),
                         mojiStilovi,
-                        napraviDugme("Sačuvaj trenutna podešavanja kao stil", this::sacuvajStil)));
+                        napraviDugme("Sačuvaj trenutna podešavanja kao stil", this::sacuvajStil)),
+                napraviKarticu("Čuvanje",
+                        new Label("Veličina sačuvane slike"), najvecaStrana,
+                        new Separator(),
+                        oznakaKvaliteta, kvalitetJpg,
+                        new Label("Manji kvalitet daje manji fajl. PNG se uvek čuva bez gubitka kvaliteta.")));
         osveziMojeStilove();
 
         Stage komande = new Stage();
@@ -400,6 +470,7 @@ public class Main extends Application {
         // Na glavnom prozoru ostaju samo dugmad
         VBox kontrole = new VBox(10,
                 otvori,
+                nedavneDugme,
                 sacuvaj,
                 zatvori,
                 undoRedo,
@@ -552,6 +623,40 @@ public class Main extends Application {
         Scene scena = new Scene(koren, 1100, 700);
         dodajPrecice(scena);
         prozor.setScene(scena);
+
+        // Prečice za dugmad glavnog prozora rade u oba prozora; vide se kad se miš zadrži na dugmetu
+        for (Scene s : List.of(scena, scenaKomandi)) {
+            dodajPrecicu(s, KeyCode.O, otvori::fire);
+            dodajPrecicu(s, KeyCode.S, sacuvaj::fire);
+            dodajPrecicu(s, KeyCode.W, zatvori::fire);
+            dodajPrecicu(s, KeyCode.K, prikaziKomande::fire);
+            dodajPrecicu(s, KeyCode.DIGIT0, this::ponistiUvecanje);
+        }
+        otvori.setTooltip(new Tooltip("Ctrl+O, ili prevuci sliku u prozor"));
+        sacuvaj.setTooltip(new Tooltip("Ctrl+S"));
+        zatvori.setTooltip(new Tooltip("Ctrl+W"));
+        undo.setTooltip(new Tooltip("Ctrl+Z"));
+        redo.setTooltip(new Tooltip("Ctrl+Y ili Ctrl+Shift+Z"));
+        prikaziKomande.setTooltip(new Tooltip("Ctrl+K"));
+
+        // Slika se može otvoriti i prevlačenjem fajla iz Windows Explorera na glavni prozor
+        scena.setOnDragOver(e -> {
+            List<File> fajlovi = e.getDragboard().getFiles();
+            if (e.getDragboard().hasFiles() && !fajlovi.isEmpty() && jeSlika(fajlovi.get(0))) {
+                e.acceptTransferModes(TransferMode.COPY);
+            }
+            e.consume();
+        });
+        scena.setOnDragDropped(e -> {
+            List<File> fajlovi = e.getDragboard().getFiles();
+            boolean uspeh = e.getDragboard().hasFiles() && !fajlovi.isEmpty() && jeSlika(fajlovi.get(0));
+            e.setDropCompleted(uspeh);
+            e.consume();
+            if (uspeh) {
+                // Dijalozi (npr. pitanje za nesačuvane izmene) se otvaraju tek kad se prevlačenje završi
+                Platform.runLater(() -> ucitajSliku(prozor, fajlovi.get(0)));
+            }
+        });
         prozor.show();
         // Glavni prozor je 20 mm od leve ivice ekrana (po vertikali ostaje gde ga je sistem postavio)
         Screen ekran = Screen.getPrimary();
@@ -1264,6 +1369,10 @@ public class Main extends Application {
                 new KeyCodeCombination(KeyCode.Z, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN), redo::fire);
     }
 
+    private static void dodajPrecicu(Scene scena, KeyCode taster, Runnable radnja) {
+        scena.getAccelerators().put(new KeyCodeCombination(taster, KeyCombination.SHORTCUT_DOWN), radnja);
+    }
+
     private static Tab napraviKarticu(String naziv, Node... sadrzaj) {
         VBox okvir = new VBox(10, sadrzaj);
         okvir.setPadding(new Insets(15));
@@ -1332,17 +1441,102 @@ public class Main extends Application {
         postaviPocetniFolder(izbor);
         File fajl = izbor.showOpenDialog(prozor);
         if (fajl != null) {
-            zapamtiFolder(fajl);
+            ucitajSliku(prozor, fajl);
         }
-        if (fajl != null && smeDaOdbaciIzmene(prozor, "Otvori sliku", "Otvoriti novu sliku bez čuvanja?")) {
-            // Nova slika počinje od nule: bez izmena i bez istorije
-            zatvoriSliku();
-            String adresa = fajl.toURI().toString();
-            original = new Image(adresa);
-            pregled = original.getWidth() > NAJVECI_PREGLED || original.getHeight() > NAJVECI_PREGLED
-                    ? new Image(adresa, NAJVECI_PREGLED, NAJVECI_PREGLED, true, true)
-                    : original;
-            prikaz.setImage(pregled);
+    }
+
+    // Zajedničko za dijalog, prevlačenje fajla i nedavne slike
+    private void ucitajSliku(Stage prozor, File fajl) {
+        if (!fajl.isFile()) {
+            prikaziGresku(prozor, "Fajl više ne postoji:\n" + fajl.getAbsolutePath());
+            ukloniIzNedavnih(fajl);
+            return;
+        }
+        zapamtiFolder(fajl);
+        if (!smeDaOdbaciIzmene(prozor, "Otvori sliku", "Otvoriti novu sliku bez čuvanja?")) {
+            return;
+        }
+        String adresa = fajl.toURI().toString();
+        Image ucitana = new Image(adresa);
+        if (ucitana.isError()) {
+            prikaziGresku(prozor, "Slika ne može da se otvori:\n" + fajl.getAbsolutePath());
+            return;
+        }
+        // Nova slika počinje od nule: bez izmena i bez istorije
+        zatvoriSliku();
+        original = ucitana;
+        pregled = original.getWidth() > NAJVECI_PREGLED || original.getHeight() > NAJVECI_PREGLED
+                ? new Image(adresa, NAJVECI_PREGLED, NAJVECI_PREGLED, true, true)
+                : original;
+        prikaz.setImage(pregled);
+        dodajUNedavne(fajl);
+    }
+
+    private static void prikaziGresku(Stage prozor, String tekst) {
+        Alert greska = new Alert(Alert.AlertType.ERROR, tekst);
+        greska.setHeaderText(null);
+        greska.initOwner(prozor);
+        greska.showAndWait();
+    }
+
+    // Da li fajl ima ekstenziju slike koju program ume da otvori
+    private static boolean jeSlika(File fajl) {
+        String ime = fajl.getName().toLowerCase();
+        return PODRZANE_EKSTENZIJE.stream().anyMatch(ime::endsWith);
+    }
+
+    // Nedavne slike se čuvaju kao jedan tekst, putanje odvojene novim redom, najnovija prva
+    private List<File> nedavneSlike() {
+        List<File> spisak = new ArrayList<>();
+        for (String putanja : podesavanjaPrograma.get(KLJUC_NEDAVNE, "").split("\n")) {
+            if (!putanja.isBlank()) {
+                spisak.add(new File(putanja));
+            }
+        }
+        return spisak;
+    }
+
+    private void zapamtiNedavne(List<File> spisak) {
+        StringBuilder zapis = new StringBuilder();
+        for (File fajl : spisak.subList(0, Math.min(NAJVISE_NEDAVNIH, spisak.size()))) {
+            zapis.append(fajl.getAbsolutePath()).append('\n');
+        }
+        podesavanjaPrograma.put(KLJUC_NEDAVNE, zapis.toString());
+        osveziNedavne();
+    }
+
+    private void dodajUNedavne(File fajl) {
+        List<File> spisak = nedavneSlike();
+        spisak.removeIf(f -> f.getAbsolutePath().equalsIgnoreCase(fajl.getAbsolutePath()));
+        spisak.add(0, fajl);
+        zapamtiNedavne(spisak);
+    }
+
+    private void ukloniIzNedavnih(File fajl) {
+        List<File> spisak = nedavneSlike();
+        spisak.removeIf(f -> f.getAbsolutePath().equalsIgnoreCase(fajl.getAbsolutePath()));
+        zapamtiNedavne(spisak);
+    }
+
+    // Ponovo pravi stavke menija "Nedavne slike": ime fajla i, u zagradi, folder u kome je
+    private void osveziNedavne() {
+        nedavneDugme.getItems().clear();
+        List<File> spisak = nedavneSlike();
+        for (File fajl : spisak) {
+            File folder = fajl.getParentFile();
+            MenuItem stavka = new MenuItem(fajl.getName() + (folder != null ? "   (" + folder.getAbsolutePath() + ")" : ""));
+            stavka.setMnemonicParsing(false);
+            stavka.setOnAction(e -> ucitajSliku(glavniProzor, fajl));
+            nedavneDugme.getItems().add(stavka);
+        }
+        if (spisak.isEmpty()) {
+            MenuItem prazno = new MenuItem("Nema nedavnih slika");
+            prazno.setDisable(true);
+            nedavneDugme.getItems().add(prazno);
+        } else {
+            MenuItem obrisi = new MenuItem("Obriši spisak");
+            obrisi.setOnAction(e -> zapamtiNedavne(List.of()));
+            nedavneDugme.getItems().addAll(new SeparatorMenuItem(), obrisi);
         }
     }
 
@@ -1422,28 +1616,79 @@ public class Main extends Application {
         // Efekte primenjujemo na sliku u punoj rezoluciji, ne na umanjeni prikaz
         double sirinaPrikaza = prikaz.getLayoutBounds().getWidth();
         double razmera = sirinaPrikaza > 0 ? sirinaIsecka(original) / sirinaPrikaza : 1;
-        Image obradjena = obradiPiksele(original, razmera);
-        ImageView puna = new ImageView(obradjena);
-        puna.setEffect(napraviEfekat(obradjena.getWidth(), obradjena.getHeight(), razmera));
+        // Vrednosti potrebne u pozadini čitamo odmah, na glavnoj niti JavaFX-a
+        Image izvor = original;
+        File odrediste = fajl;
+        double[] stanjePriCuvanju = trenutnoStanje();
+        double alfa = 1 - providnost.getValue();
+        int kvartovi = (int) rotacija.getValue();
+        boolean levoDesno = ogledaloLevoDesno.getValue() == 1;
+        boolean goreDole = ogledaloGoreDole.getValue() == 1;
+        int najvecaDuzaStrana = najvecaStrana.getValue() == null ? 0 : najvecaStrana.getValue();
+        float kvalitet = (float) kvalitetJpg.getValue();
+        Stage poruka = prikaziPorukuCuvanja(prozor);
 
-        SnapshotParameters parametri = new SnapshotParameters();
-        // JPG ne podržava providnost, pa providne delove popunjavamo belom bojom
-        parametri.setFill(jeJpg ? Color.WHITE : Color.TRANSPARENT);
-        // Zamućenje širi sliku preko ivica; snimamo samo deo veličine originala
-        parametri.setViewport(new Rectangle2D(0, 0, obradjena.getWidth(), obradjena.getHeight()));
-        WritableImage snimak = puna.snapshot(parametri, null);
+        // Obrada piksela i upis u fajl traju dugo, pa se rade u pozadini, a program ne "zamrzne".
+        // Prozor sa porukom je modalan, pa se za to vreme ne mogu menjati klizači koje obradiPiksele čita.
+        Thread pozadina = new Thread(() -> {
+            try {
+                Image obradjena = obradiPiksele(izvor, razmera);
+                // Efekti i snimak se rade na glavnoj niti JavaFX-a; pozadina čeka rezultat
+                FutureTask<WritableImage> snimanje = new FutureTask<>(() -> {
+                    ImageView puna = new ImageView(obradjena);
+                    puna.setEffect(napraviEfekat(obradjena.getWidth(), obradjena.getHeight(), razmera));
+                    SnapshotParameters parametri = new SnapshotParameters();
+                    // JPG ne podržava providnost, pa providne delove popunjavamo belom bojom
+                    parametri.setFill(jeJpg ? Color.WHITE : Color.TRANSPARENT);
+                    // Zamućenje širi sliku preko ivica; snimamo samo deo veličine originala
+                    parametri.setViewport(new Rectangle2D(0, 0, obradjena.getWidth(), obradjena.getHeight()));
+                    return puna.snapshot(parametri, null);
+                });
+                Platform.runLater(snimanje);
+                WritableImage snimak = snimanje.get();
 
-        try {
-            BufferedImage zaUpis = okreni(uBufferedImage(snimak, jeJpg, 1 - providnost.getValue()),
-                    (int) rotacija.getValue(),
-                    ogledaloLevoDesno.getValue() == 1, ogledaloGoreDole.getValue() == 1);
-            ImageIO.write(zaUpis, jeJpg ? "jpg" : "png", fajl);
-            sacuvanoStanje = trenutnoStanje();
-        } catch (IOException ex) {
-            Alert greska = new Alert(Alert.AlertType.ERROR, "Čuvanje nije uspelo: " + ex.getMessage());
-            greska.initOwner(prozor);
-            greska.showAndWait();
-        }
+                BufferedImage zaUpis = smanji(
+                        okreni(uBufferedImage(snimak, jeJpg, alfa), kvartovi, levoDesno, goreDole),
+                        najvecaDuzaStrana);
+                if (jeJpg) {
+                    upisiJpg(zaUpis, odrediste, kvalitet);
+                } else {
+                    ImageIO.write(zaUpis, "png", odrediste);
+                }
+                Platform.runLater(() -> {
+                    poruka.close();
+                    sacuvanoStanje = stanjePriCuvanju;
+                });
+            } catch (Exception | OutOfMemoryError ex) {
+                Throwable uzrok = ex instanceof ExecutionException && ex.getCause() != null ? ex.getCause() : ex;
+                Platform.runLater(() -> {
+                    poruka.close();
+                    Alert greska = new Alert(Alert.AlertType.ERROR, "Čuvanje nije uspelo: " + uzrok.getMessage());
+                    greska.initOwner(prozor);
+                    greska.showAndWait();
+                });
+            }
+        }, "cuvanje-slike");
+        pozadina.setDaemon(true);
+        pozadina.start();
+    }
+
+    // Mali prozor "Čuvanje u toku…" koji se ne može zatvoriti i blokira ostale prozore dok traje čuvanje
+    private static Stage prikaziPorukuCuvanja(Stage vlasnik) {
+        ProgressIndicator krug = new ProgressIndicator();
+        krug.setPrefSize(40, 40);
+        HBox sadrzaj = new HBox(15, krug, new Label("Čuvanje u toku…"));
+        sadrzaj.setAlignment(Pos.CENTER_LEFT);
+        sadrzaj.setPadding(new Insets(20));
+        Stage poruka = new Stage(StageStyle.UTILITY);
+        poruka.initOwner(vlasnik);
+        poruka.initModality(Modality.APPLICATION_MODAL);
+        poruka.setTitle("Čuvanje");
+        poruka.setResizable(false);
+        poruka.setOnCloseRequest(e -> e.consume());
+        poruka.setScene(new Scene(sadrzaj));
+        poruka.show();
+        return poruka;
     }
 
     // Pretvara JavaFX sliku u AWT sliku koju ImageIO ume da upiše.
@@ -1476,6 +1721,51 @@ public class Main extends Application {
     }
 
     // Primenjuje ogledalo, pa rotaciju za kvartovi * 90° udesno
+    // Smanjuje sliku tako da duža strana bude najviše najvecaStrana piksela (0 = bez promene; slika se ne uvećava).
+    // Smanjuje se postepeno, najviše dvostruko u jednom koraku, jer jedan veliki korak daje nazubljenu sliku.
+    private static BufferedImage smanji(BufferedImage slika, int najvecaStrana) {
+        int w = slika.getWidth();
+        int h = slika.getHeight();
+        if (najvecaStrana <= 0 || Math.max(w, h) <= najvecaStrana) {
+            return slika;
+        }
+        double faktor = (double) najvecaStrana / Math.max(w, h);
+        int ciljW = Math.max(1, (int) Math.round(w * faktor));
+        int ciljH = Math.max(1, (int) Math.round(h * faktor));
+        BufferedImage trenutna = slika;
+        while (w != ciljW || h != ciljH) {
+            w = Math.max(ciljW, w / 2);
+            h = Math.max(ciljH, h / 2);
+            BufferedImage manja = new BufferedImage(w, h, slika.getType());
+            Graphics2D crtanje = manja.createGraphics();
+            crtanje.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+            crtanje.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
+            crtanje.drawImage(trenutna, 0, 0, w, h, null);
+            crtanje.dispose();
+            trenutna = manja;
+        }
+        return trenutna;
+    }
+
+    // Upisuje JPG sa zadatim kvalitetom (0.5 - 1); obično ImageIO.write uvek koristi 75%
+    private static void upisiJpg(BufferedImage slika, File fajl, float kvalitet) throws IOException {
+        ImageWriter pisac = ImageIO.getImageWritersByFormatName("jpg").next();
+        ImageWriteParam parametri = pisac.getDefaultWriteParam();
+        parametri.setCompressionMode(ImageWriteParam.MODE_EXPLICIT);
+        parametri.setCompressionQuality(kvalitet);
+        // Postojeći fajl se prvo briše, inače bi duži stari sadržaj ostao na kraju novog fajla
+        Files.deleteIfExists(fajl.toPath());
+        try (ImageOutputStream izlaz = ImageIO.createImageOutputStream(fajl)) {
+            if (izlaz == null) {
+                throw new IOException("Fajl ne može da se napravi: " + fajl.getAbsolutePath());
+            }
+            pisac.setOutput(izlaz);
+            pisac.write(null, new IIOImage(slika, null, null), parametri);
+        } finally {
+            pisac.dispose();
+        }
+    }
+
     private static BufferedImage okreni(BufferedImage slika, int kvartovi, boolean levoDesno, boolean goreDole) {
         if (kvartovi == 0 && !levoDesno && !goreDole) {
             return slika;
