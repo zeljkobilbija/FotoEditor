@@ -174,7 +174,14 @@ public class Main extends Application {
     private final Slider velicinaTeksta = new Slider(0, 1, 0);
     private final Slider tekstX = new Slider(-1, 1, 0);
     private final Slider tekstY = new Slider(-1, 1, 0);
+    private final Slider rotacijaTeksta = new Slider(-180, 180, 0);
+    // Senka teksta: jačina (0 = bez senke), udaljenost (0 = 6% veličine slova, 1 = 40%),
+    // smer (0 = dole desno, ugao u stepenima u smeru kazaljke) i zamućenje (1 = 30% veličine slova)
     private final Slider senkaTeksta = new Slider(0, 1, 0);
+    private final Slider udaljenostSenke = new Slider(0, 1, 0);
+    private final Slider smerSenke = new Slider(0, 360, 0);
+    private final Slider zamucenjeSenke = new Slider(0, 1, 0);
+    private final Slider bojaSenke = new Slider(0, 0xFFFFFFFFL, 0);
     // Skriveni klizači za izbor fonta, podebljanja i boje (menjaju se preko izbornika na kartici "Tekst")
     private static final List<String> FONTOVI = List.of(
             "Arial", "Verdana", "Times New Roman", "Georgia", "Courier New", "Impact", "Comic Sans MS");
@@ -188,6 +195,10 @@ public class Main extends Application {
     private final Slider polaroidOkvir = new Slider(0, 1, 0);
     private final Slider bojaOkvira = new Slider(0, 0xFFFFFFFFL, 0);
 
+    // true dok korisnik mišem pomera tekst; razlika između tačke hvatanja i središta teksta
+    private boolean pomeraTekst = false;
+    private final double[] hvatanjeTeksta = new double[2];
+
     // Prikaz teksta i okvira preko slike na glavnom prozoru
     private final Rectangle okvirPrikaz = new Rectangle();
     private final Text tekstPrikaz = new Text();
@@ -198,6 +209,7 @@ public class Main extends Application {
             rotacija, ogledaloLevoDesno, ogledaloGoreDole,
             isecanjeLevo, isecanjeGore, isecanjeDesno, isecanjeDole,
             tekstIndeks, velicinaTeksta, tekstX, tekstY, senkaTeksta, fontTeksta, podebljanTekst, bojaTeksta,
+            rotacijaTeksta, udaljenostSenke, smerSenke, zamucenjeSenke, bojaSenke,
             debljinaOkvira, polaroidOkvir, bojaOkvira);
     // true dok korisnik mišem bira deo slike za isecanje
     private boolean biraIsecak = false;
@@ -260,6 +272,7 @@ public class Main extends Application {
             pikselizacija, posterizacija, reljef, crtez, uljanaSlika, akvarel,
             senke, svetla, isecanjeLevo, isecanjeGore, isecanjeDesno, isecanjeDole,
             tekstIndeks, velicinaTeksta, tekstX, tekstY, senkaTeksta, fontTeksta, podebljanTekst, bojaTeksta,
+            rotacijaTeksta, udaljenostSenke, smerSenke, zamucenjeSenke, bojaSenke,
             debljinaOkvira, polaroidOkvir, bojaOkvira);
 
     // Učitana slika u punoj rezoluciji (koristi se pri čuvanju) i njena umanjena kopija
@@ -401,13 +414,15 @@ public class Main extends Application {
         podebljano.selectedProperty().addListener((o, s, n) -> podebljanTekst.setValue(n ? 1 : 0));
         podebljanTekst.valueProperty().addListener((o, s, n) -> podebljano.setSelected(n.doubleValue() == 1));
         ColorPicker bojaTekstaIzbor = new ColorPicker();
-        poveziBoju(bojaTekstaIzbor, bojaTeksta);
+        poveziBoju(bojaTekstaIzbor, bojaTeksta, BELA);
+        ColorPicker bojaSenkeIzbor = new ColorPicker();
+        poveziBoju(bojaSenkeIzbor, bojaSenke, CRNA);
 
         ChoiceBox<String> vrstaOkvira = new ChoiceBox<>(FXCollections.observableArrayList("Običan", "Polaroid"));
         vrstaOkvira.setMaxWidth(Double.MAX_VALUE);
         poveziIzbor(vrstaOkvira, polaroidOkvir);
         ColorPicker bojaOkviraIzbor = new ColorPicker();
-        poveziBoju(bojaOkviraIzbor, bojaOkvira);
+        poveziBoju(bojaOkviraIzbor, bojaOkvira, BELA);
 
         // Isecanje: posle klika na dugme korisnik mišem prevlači pravougaonik preko slike
         Button iseci = napraviDugme("Iseci (prevuci mišem preko slike)", () -> {});
@@ -468,7 +483,15 @@ public class Main extends Application {
                         new Label("Veličina"), velicinaTeksta,
                         new Label("Položaj levo - desno"), tekstX,
                         new Label("Položaj gore - dole"), tekstY,
-                        new Label("Senka"), senkaTeksta,
+                        new Label("Rotacija (stepeni)"), rotacijaTeksta,
+                        new Label("Tekst možeš i da prevučeš mišem po slici."),
+                        new Separator(),
+                        new Label("Senka - jačina"), senkaTeksta,
+                        new Label("Boja senke"), bojaSenkeIzbor,
+                        new Label("Udaljenost senke"), udaljenostSenke,
+                        new Label("Smer senke (0 = dole desno)"), smerSenke,
+                        new Label("Zamućenje senke"), zamucenjeSenke,
+                        new Separator(),
                         new Label("Tekst se ne menja filterima i uvek ostaje oštar.")),
                 napraviKarticu("Okvir",
                         new Label("Debljina okvira"), debljinaOkvira,
@@ -532,7 +555,7 @@ public class Main extends Application {
         sadrzajKomandi.setBottom(donjiDeo);
 
         // Dovoljno široko da se vide naslovi svih kartica
-        Scene scenaKomandi = new Scene(sadrzajKomandi, 450, 700);
+        Scene scenaKomandi = new Scene(sadrzajKomandi, 563, 700);
         dodajPrecice(scenaKomandi);
         komande.setScene(scenaKomandi);
 
@@ -644,6 +667,13 @@ public class Main extends Application {
                 okvirIsecka.setWidth(0);
                 okvirIsecka.setHeight(0);
                 okvirIsecka.setVisible(true);
+            } else if (jeIznadTeksta(e.getX(), e.getY())) {
+                // Hvatanje teksta: pamti se gde je uhvaćen u odnosu na njegovo središte
+                pomeraTekst = true;
+                Bounds granice = tekstPrikaz.getBoundsInParent();
+                hvatanjeTeksta[0] = e.getX() - granice.getCenterX();
+                hvatanjeTeksta[1] = e.getY() - granice.getCenterY();
+                centar.setCursor(Cursor.CLOSED_HAND);
             }
         });
         centar.setOnMouseDragged(e -> {
@@ -652,6 +682,16 @@ public class Main extends Application {
                 okvirIsecka.setY(Math.min(pocetak[1], e.getY()));
                 okvirIsecka.setWidth(Math.abs(e.getX() - pocetak[0]));
                 okvirIsecka.setHeight(Math.abs(e.getY() - pocetak[1]));
+            } else if (pomeraTekst) {
+                // Novo središte teksta se pretvara u položaj od -1 do 1 u odnosu na sliku.
+                // Dok traje prevlačenje ne beleži se u istoriju, nego tek kad se miš pusti.
+                Bounds slika = prikaz.localToParent(prikaz.getLayoutBounds());
+                double noviX = (e.getX() - hvatanjeTeksta[0] - slika.getCenterX()) / (slika.getWidth() / 2);
+                double noviY = (e.getY() - hvatanjeTeksta[1] - slika.getCenterY()) / (slika.getHeight() / 2);
+                bezBelezenja = true;
+                tekstX.setValue(ogranici(noviX, -1, 1));
+                tekstY.setValue(ogranici(noviY, -1, 1));
+                bezBelezenja = false;
             } else if (uvecanje > 1) {
                 // Prevlačenje pomera uvećanu sliku
                 pomakX += e.getX() - poslednjaTacka[0];
@@ -662,6 +702,13 @@ public class Main extends Application {
             poslednjaTacka[1] = e.getY();
         });
         centar.setOnMouseReleased(e -> {
+            if (pomeraTekst) {
+                // Celo prevlačenje teksta je jedan korak za Undo
+                pomeraTekst = false;
+                zabeleziStanje();
+                centar.setCursor(Cursor.OPEN_HAND);
+                return;
+            }
             if (!biraIsecak) {
                 return;
             }
@@ -674,9 +721,9 @@ public class Main extends Application {
             iseci.setText("Iseci (prevuci mišem preko slike)");
             iseciNaOkvir(pocetak[0], pocetak[1], e.getX(), e.getY());
         });
-        // Dok traje biranje isecka, kursor je krstić; kad je slika uvećana, ruka za pomeranje
-        centar.setOnMouseMoved(e -> centar.setCursor(
-                biraIsecak ? Cursor.CROSSHAIR : uvecanje > 1 ? Cursor.OPEN_HAND : Cursor.DEFAULT));
+        // Dok traje biranje isecka, kursor je krstić; iznad teksta ili kad je slika uvećana, ruka za pomeranje
+        centar.setOnMouseMoved(e -> centar.setCursor(biraIsecak ? Cursor.CROSSHAIR
+                : jeIznadTeksta(e.getX(), e.getY()) || uvecanje > 1 ? Cursor.OPEN_HAND : Cursor.DEFAULT));
 
         prikaz.setPreserveRatio(true);
         // RGB efekat zavisi od veličine prikaza, pa ga osvežavamo i kad se prozor menja
@@ -1188,6 +1235,13 @@ public class Main extends Application {
         return Math.round(vrednost * 100) / 100.0;
     }
 
+    // Da li je tačka (u koordinatama prostora za prikaz) iznad vidljivog teksta; uračunava i rotaciju teksta.
+    // Gleda se ceo pravougaonik reda teksta, ne samo slova, da bi se tekst lakše uhvatio.
+    private boolean jeIznadTeksta(double x, double y) {
+        return tekstPrikaz.isVisible()
+                && tekstPrikaz.getLayoutBounds().contains(tekstPrikaz.parentToLocal(x, y));
+    }
+
     // Upisuje tekst iz polja u istoriju (kao redni broj u spisku tekstovi)
     private void potvrdiTekst() {
         String tekst = tekstPolje.getText();
@@ -1210,29 +1264,36 @@ public class Main extends Application {
         klizac.valueProperty().addListener((o, s, n) -> izbor.getSelectionModel().select(n.intValue()));
     }
 
-    // Povezuje izbor boje sa skrivenim klizačem. Klizač čuva boju kao obrnut ARGB broj,
-    // da bi početna vrednost 0 (i posle Resetuj) značila neprovidnu belu boju.
-    private static void poveziBoju(ColorPicker izbor, Slider klizac) {
-        izbor.setValue(uBoju(klizac.getValue()));
-        izbor.valueProperty().addListener((o, s, n) -> klizac.setValue(izBoje(n)));
-        klizac.valueProperty().addListener((o, s, n) -> izbor.setValue(uBoju(n.doubleValue())));
+    // Početne boje skrivenih klizača za boju, kao ARGB broj
+    private static final long BELA = 0xFFFFFFFFL;
+    private static final long CRNA = 0xFF000000L;
+
+    // Povezuje izbor boje sa skrivenim klizačem. Klizač čuva ARGB broj XOR početna boja,
+    // da bi vrednost 0 (početna, i posle Resetuj) značila baš početnu boju.
+    private static void poveziBoju(ColorPicker izbor, Slider klizac, long pocetna) {
+        izbor.setValue(uBoju(klizac.getValue(), pocetna));
+        izbor.valueProperty().addListener((o, s, n) -> klizac.setValue(izBoje(n, pocetna)));
+        klizac.valueProperty().addListener((o, s, n) -> izbor.setValue(uBoju(n.doubleValue(), pocetna)));
     }
 
-    private static Color uBoju(double vrednost) {
-        long argb = ~(long) vrednost & 0xFFFFFFFFL;
+    private static Color uBoju(double vrednost, long pocetna) {
+        long argb = ((long) vrednost ^ pocetna) & 0xFFFFFFFFL;
         return Color.rgb((int) (argb >> 16) & 0xFF, (int) (argb >> 8) & 0xFF, (int) argb & 0xFF,
                 ((argb >> 24) & 0xFF) / 255.0);
     }
 
-    private static double izBoje(Color boja) {
+    private static double izBoje(Color boja, long pocetna) {
         long argb = Math.round(boja.getOpacity() * 255) << 24 | Math.round(boja.getRed() * 255) << 16
                 | Math.round(boja.getGreen() * 255) << 8 | Math.round(boja.getBlue() * 255);
-        return ~argb & 0xFFFFFFFFL;
+        return (argb ^ pocetna) & 0xFFFFFFFFL;
     }
 
     // Podešavanja teksta i okvira u jednom komadu, da bi se mogla koristiti i u pozadini pri čuvanju
     private record Dodaci(String tekst, String font, boolean podebljano, double velicina, double x, double y,
-                          Color boja, double senka, double okvir, boolean polaroid, Color bojaOkvira) {
+                          double rotacija, Color boja,
+                          double senka, Color bojaSenke, double udaljenostSenke, double smerSenke,
+                          double zamucenjeSenke,
+                          double okvir, boolean polaroid, Color bojaOkvira) {
 
         double velicinaFonta(double visinaSlike) {
             return (0.03 + 0.2 * velicina) * visinaSlike;
@@ -1247,17 +1308,34 @@ public class Main extends Application {
             return debljina(sirinaSlike, visinaSlike) * (polaroid ? 3.5 : 1);
         }
 
-        // Senka je pomerena udesno i nadole za 6% veličine slova
-        double pomakSenke(double velicinaFonta) {
-            return velicinaFonta * 0.06;
+        // Pomak senke u pikselima: udaljenost od 6% do 40% veličine slova, u smeru 45° (dole desno) + smer.
+        // Smer je nezavisan od rotacije teksta, kao da svetlo uvek dolazi sa iste strane.
+        double pomakSenkeX(double velicinaFonta) {
+            return velicinaFonta * (0.06 + 0.34 * udaljenostSenke) * Math.cos(Math.toRadians(45 + smerSenke));
+        }
+
+        double pomakSenkeY(double velicinaFonta) {
+            return velicinaFonta * (0.06 + 0.34 * udaljenostSenke) * Math.sin(Math.toRadians(45 + smerSenke));
+        }
+
+        // Poluprečnik zamućenja senke u pikselima (kao kod GaussianBlur u JavaFX-u)
+        double zamucenjeSenkePiksela(double velicinaFonta) {
+            return velicinaFonta * 0.3 * zamucenjeSenke;
+        }
+
+        // Boja senke pomnožena njenom jačinom
+        Color konacnaBojaSenke() {
+            return bojaSenke.deriveColor(0, 1, 1, senka);
         }
     }
 
     private Dodaci trenutniDodaci() {
         return new Dodaci(tekstPolje.getText(), FONTOVI.get((int) fontTeksta.getValue()),
                 podebljanTekst.getValue() == 1, velicinaTeksta.getValue(), tekstX.getValue(), tekstY.getValue(),
-                uBoju(bojaTeksta.getValue()), senkaTeksta.getValue(),
-                debljinaOkvira.getValue(), polaroidOkvir.getValue() == 1, uBoju(bojaOkvira.getValue()));
+                rotacijaTeksta.getValue(), uBoju(bojaTeksta.getValue(), BELA),
+                senkaTeksta.getValue(), uBoju(bojaSenke.getValue(), CRNA), udaljenostSenke.getValue(),
+                smerSenke.getValue(), zamucenjeSenke.getValue(),
+                debljinaOkvira.getValue(), polaroidOkvir.getValue() == 1, uBoju(bojaOkvira.getValue(), BELA));
     }
 
     // Postavlja tekst i okvir preko slike na glavnom prozoru, prema tome gde se slika trenutno vidi
@@ -1287,13 +1365,16 @@ public class Main extends Application {
             t.setFont(font);
             t.setX(cx - t.getLayoutBounds().getWidth() / 2);
             t.setY(cy);
+            // Rotira se oko svog središta, a to je tačka (cx, cy)
+            t.setRotate(d.rotacija());
         }
         tekstPrikaz.setFill(d.boja());
         tekstPrikaz.setVisible(imaTeksta);
-        double pomak = d.pomakSenke(velicinaFonta);
-        senkaPrikaz.setX(senkaPrikaz.getX() + pomak);
-        senkaPrikaz.setY(cy + pomak);
-        senkaPrikaz.setFill(Color.color(0, 0, 0, d.senka()));
+        senkaPrikaz.setX(senkaPrikaz.getX() + d.pomakSenkeX(velicinaFonta));
+        senkaPrikaz.setY(cy + d.pomakSenkeY(velicinaFonta));
+        senkaPrikaz.setFill(d.konacnaBojaSenke());
+        double zamucenjeSenke = d.zamucenjeSenkePiksela(velicinaFonta);
+        senkaPrikaz.setEffect(zamucenjeSenke >= 1 ? new GaussianBlur(Math.min(63, zamucenjeSenke)) : null);
         senkaPrikaz.setVisible(imaTeksta && d.senka() > 0);
     }
 
@@ -1302,25 +1383,47 @@ public class Main extends Application {
         int w = slika.getWidth();
         int h = slika.getHeight();
         if (!d.tekst().isBlank()) {
-            Graphics2D crtanje = slika.createGraphics();
-            crtanje.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
-            crtanje.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-            float velicinaFonta = (float) d.velicinaFonta(h);
-            crtanje.setFont(new java.awt.Font(d.font(), d.podebljano() ? java.awt.Font.BOLD : java.awt.Font.PLAIN, 1)
-                    .deriveFont(velicinaFonta));
-            FontMetrics mere = crtanje.getFontMetrics();
+            double velicinaFonta = d.velicinaFonta(h);
             double cx = w / 2.0 + d.x() * w / 2;
             double cy = h / 2.0 + d.y() * h / 2;
-            // Red teksta je centriran po visini oko tačke cy, kao i na prikazu
-            float x = (float) (cx - mere.stringWidth(d.tekst()) / 2.0);
-            float y = (float) (cy + (mere.getAscent() - mere.getDescent()) / 2.0);
             if (d.senka() > 0) {
-                float pomak = (float) d.pomakSenke(velicinaFonta);
-                crtanje.setColor(new java.awt.Color(0, 0, 0, (float) d.senka()));
-                crtanje.drawString(d.tekst(), x + pomak, y + pomak);
+                double sx = cx + d.pomakSenkeX(velicinaFonta);
+                double sy = cy + d.pomakSenkeY(velicinaFonta);
+                // GaussianBlur poluprečnika r ≈ tri zamućenja kvadratom poluprečnika r/3
+                int poluprecnik = (int) Math.round(d.zamucenjeSenkePiksela(velicinaFonta) / 3);
+                if (poluprecnik < 1) {
+                    Graphics2D crtanje = slika.createGraphics();
+                    nacrtajTekst(crtanje, d, velicinaFonta, sx, sy, uAwtBoju(d.konacnaBojaSenke()));
+                    crtanje.dispose();
+                } else {
+                    // Zamućena senka: tekst se crta na poseban providan sloj, zamuti mu se providnost,
+                    // pa se sloj u boji senke stavi preko slike
+                    BufferedImage sloj = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
+                    Graphics2D crtanjeSloja = sloj.createGraphics();
+                    nacrtajTekst(crtanjeSloja, d, velicinaFonta, sx, sy, java.awt.Color.WHITE);
+                    crtanjeSloja.dispose();
+                    int[] pikseli = sloj.getRGB(0, 0, w, h, null, 0, w);
+                    int[] alfa = new int[pikseli.length];
+                    for (int i = 0; i < pikseli.length; i++) {
+                        alfa[i] = pikseli[i] >>> 24;
+                    }
+                    for (int prolaz = 0; prolaz < 3; prolaz++) {
+                        alfa = zamutiKanal(alfa, w, h, poluprecnik);
+                    }
+                    Color boja = d.konacnaBojaSenke();
+                    int rgb = (int) Math.round(boja.getRed() * 255) << 16
+                            | (int) Math.round(boja.getGreen() * 255) << 8 | (int) Math.round(boja.getBlue() * 255);
+                    for (int i = 0; i < pikseli.length; i++) {
+                        pikseli[i] = (int) Math.round(alfa[i] * boja.getOpacity()) << 24 | rgb;
+                    }
+                    sloj.setRGB(0, 0, w, h, pikseli, 0, w);
+                    Graphics2D crtanje = slika.createGraphics();
+                    crtanje.drawImage(sloj, 0, 0, null);
+                    crtanje.dispose();
+                }
             }
-            crtanje.setColor(uAwtBoju(d.boja()));
-            crtanje.drawString(d.tekst(), x, y);
+            Graphics2D crtanje = slika.createGraphics();
+            nacrtajTekst(crtanje, d, velicinaFonta, cx, cy, uAwtBoju(d.boja()));
             crtanje.dispose();
         }
 
@@ -1336,6 +1439,48 @@ public class Main extends Application {
         crtanje.drawImage(slika, debljina, debljina, null);
         crtanje.dispose();
         return saOkvirom;
+    }
+
+    // Crta tekst centriran oko tačke (cx, cy) i rotiran oko nje, kao na prikazu
+    private static void nacrtajTekst(Graphics2D crtanje, Dodaci d, double velicinaFonta,
+                                     double cx, double cy, java.awt.Color boja) {
+        crtanje.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+        crtanje.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+        crtanje.setFont(new java.awt.Font(d.font(), d.podebljano() ? java.awt.Font.BOLD : java.awt.Font.PLAIN, 1)
+                .deriveFont((float) velicinaFonta));
+        FontMetrics mere = crtanje.getFontMetrics();
+        crtanje.rotate(Math.toRadians(d.rotacija()), cx, cy);
+        // Red teksta je centriran po visini oko tačke cy
+        float x = (float) (cx - mere.stringWidth(d.tekst()) / 2.0);
+        float y = (float) (cy + (mere.getAscent() - mere.getDescent()) / 2.0);
+        crtanje.setColor(boja);
+        crtanje.drawString(d.tekst(), x, y);
+    }
+
+    // Zamućenje jednog kanala (npr. providnosti) prosekom kvadrata poluprečnika r: po redovima, pa po kolonama
+    private static int[] zamutiKanal(int[] kanal, int w, int h, int r) {
+        int[] vodoravno = new int[kanal.length];
+        for (int y = 0; y < h; y++) {
+            zamutiLinijuKanala(kanal, vodoravno, y * w, 1, w, r);
+        }
+        int[] rezultat = new int[kanal.length];
+        for (int x = 0; x < w; x++) {
+            zamutiLinijuKanala(vodoravno, rezultat, x, w, h, r);
+        }
+        return rezultat;
+    }
+
+    private static void zamutiLinijuKanala(int[] izvor, int[] cilj, int pocetak, int korak, int duzina, int r) {
+        int zbir = 0;
+        for (int k = -r; k <= r; k++) {
+            zbir += izvor[pocetak + Math.max(0, Math.min(duzina - 1, k)) * korak];
+        }
+        int sirinaProzora = 2 * r + 1;
+        for (int i = 0; i < duzina; i++) {
+            cilj[pocetak + i * korak] = zbir / sirinaProzora;
+            zbir += izvor[pocetak + Math.min(duzina - 1, i + r + 1) * korak]
+                    - izvor[pocetak + Math.max(0, i - r) * korak];
+        }
     }
 
     private static java.awt.Color uAwtBoju(Color boja) {
