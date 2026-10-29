@@ -1,6 +1,7 @@
 package org.example;
 
 import javafx.application.Application;
+import javafx.application.Platform;
 import javafx.geometry.Insets;
 import javafx.geometry.Point2D;
 import javafx.geometry.Rectangle2D;
@@ -8,14 +9,18 @@ import javafx.scene.Cursor;
 import javafx.scene.Node;
 import javafx.scene.Scene;
 import javafx.scene.SnapshotParameters;
+import javafx.scene.canvas.Canvas;
+import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
 import javafx.scene.control.ButtonType;
 import javafx.scene.control.Label;
+import javafx.scene.control.ScrollPane;
 import javafx.scene.control.Separator;
 import javafx.scene.control.Slider;
 import javafx.scene.control.Tab;
 import javafx.scene.control.TabPane;
+import javafx.scene.control.TextInputDialog;
 import javafx.scene.effect.Blend;
 import javafx.scene.effect.BlendMode;
 import javafx.scene.effect.Bloom;
@@ -46,6 +51,7 @@ import javafx.scene.shape.Rectangle;
 import javafx.stage.FileChooser;
 import javafx.stage.Screen;
 import javafx.stage.Stage;
+import javafx.stage.Window;
 
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
@@ -54,8 +60,11 @@ import java.io.IOException;
 import java.util.ArrayDeque;
 import java.util.Arrays;
 import java.util.Deque;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.prefs.BackingStoreException;
 import java.util.prefs.Preferences;
 
 public class Main extends Application {
@@ -113,6 +122,14 @@ public class Main extends Application {
     // true dok korisnik mišem bira deo slike za isecanje
     private boolean biraIsecak = false;
 
+    // Zumiranje i pomeranje prikaza; ne utiče na sačuvanu sliku i ne beleži se u istoriju
+    private static final double NAJVECE_UVECANJE = 10;
+    private double uvecanje = 1;
+    private double pomakX = 0;
+    private double pomakY = 0;
+    // true dok je pritisnuto dugme "Pre / posle" (prikazuje se slika bez ijedne izmene)
+    private boolean prikazujeOriginal = false;
+
     // Svetla i senke: posvetljavanje tamnih i potamnjivanje svetlih delova (0 = bez promene)
     private final Slider senke = new Slider(0, 1, 0);
     private final Slider svetla = new Slider(0, 1, 0);
@@ -129,6 +146,29 @@ public class Main extends Application {
     private final List<Slider> klizaciPiksela = List.of(
             isecanjeLevo, isecanjeGore, isecanjeDesno, isecanjeDole, senke, svetla,
             pikselizacija, posterizacija, reljef, crtez, uljanaSlika, akvarel);
+
+    // Imena klizača pod kojima se čuvaju sopstveni stilovi (geometrija i isecanje nisu deo stila).
+    // Ime se ne sme menjati, jer se tako čuvaju već sačuvani stilovi.
+    private final Map<String, Slider> kljuceviStilova = Map.ofEntries(
+            Map.entry("svetlina", svetlina), Map.entry("kontrast", kontrast),
+            Map.entry("senke", senke), Map.entry("svetla", svetla),
+            Map.entry("zasicenost", zasicenost), Map.entry("nijansa", nijansa),
+            Map.entry("temperatura", temperatura), Map.entry("negativ", negativ),
+            Map.entry("crvena", crvena), Map.entry("zelena", zelena), Map.entry("plava", plava),
+            Map.entry("providnost", providnost),
+            Map.entry("ostrina", ostrina), Map.entry("vinjeta", vinjeta), Map.entry("zrno", zrno),
+            Map.entry("sepija", sepija), Map.entry("sjaj", sjaj), Map.entry("bloom", bloom),
+            Map.entry("zamucenje", zamucenje), Map.entry("zamucenjePokretom", zamucenjePokretom),
+            Map.entry("ugaoPokreta", ugaoPokreta),
+            Map.entry("pikselizacija", pikselizacija), Map.entry("posterizacija", posterizacija),
+            Map.entry("reljef", reljef), Map.entry("crtez", crtez),
+            Map.entry("uljanaSlika", uljanaSlika), Map.entry("akvarel", akvarel));
+    // Dugmad sopstvenih stilova na kartici "Stilovi"
+    private final VBox mojiStilovi = new VBox(5);
+
+    // Histogram trenutnog izgleda slike, na dnu prozora "Komande"
+    private final Canvas histogram = new Canvas(400, 130);
+    private boolean histogramZakazan = false;
 
     // Svi klizači čije se vrednosti pamte u istoriji (novi klizač treba dodati ovde)
     private final List<Slider> sviKlizaci = List.of(
@@ -303,12 +343,28 @@ public class Main extends Application {
                         napraviDugme("Strip", () -> primeniStil(Map.of(
                                 posterizacija, 0.7, zasicenost, 0.4, ostrina, 0.5))),
                         new Separator(),
-                        napraviDugme("Bez stila", () -> primeniStil(Map.of()))));
+                        napraviDugme("Bez stila", () -> primeniStil(Map.of())),
+                        new Separator(),
+                        new Label("Moji stilovi"),
+                        mojiStilovi,
+                        napraviDugme("Sačuvaj trenutna podešavanja kao stil", this::sacuvajStil)));
+        osveziMojeStilove();
 
         Stage komande = new Stage();
         komande.initOwner(prozor);
         komande.setTitle("Komande");
-        Scene scenaKomandi = new Scene(kartice, 300, 700);
+        // Histogram je ispod kartica, pa se vidi koja god da je kartica otvorena
+        VBox donjiDeo = new VBox(5,
+                new Separator(),
+                new Label("Histogram (siva: osvetljenost; linije: crvena, zelena, plava)"),
+                histogram);
+        donjiDeo.setPadding(new Insets(0, 15, 15, 15));
+        BorderPane sadrzajKomandi = new BorderPane();
+        sadrzajKomandi.setCenter(kartice);
+        sadrzajKomandi.setBottom(donjiDeo);
+
+        // Dovoljno široko da se vide naslovi svih kartica
+        Scene scenaKomandi = new Scene(sadrzajKomandi, 450, 700);
         dodajPrecice(scenaKomandi);
         komande.setScene(scenaKomandi);
 
@@ -316,8 +372,13 @@ public class Main extends Application {
         Button prikaziKomande = new Button("Otvori Komande");
         prikaziKomande.setMaxWidth(Double.MAX_VALUE);
         // Natpis prati stanje prozora, i kad se zatvori dugmetom i kad se zatvori sa X
-        komande.showingProperty().addListener((o, s, otvoren) ->
-                prikaziKomande.setText(otvoren ? "Zatvori Komande" : "Otvori Komande"));
+        // Histogram se računa samo dok je prozor otvoren, pa se osvežava pri otvaranju
+        komande.showingProperty().addListener((o, s, otvoren) -> {
+            prikaziKomande.setText(otvoren ? "Zatvori Komande" : "Otvori Komande");
+            if (otvoren) {
+                zakaziHistogram();
+            }
+        });
         prikaziKomande.setOnAction(e -> {
             if (komande.isShowing()) {
                 komande.hide();
@@ -331,6 +392,11 @@ public class Main extends Application {
             komande.toFront();
         });
 
+        // Dok se drži pritisnuto, prikazuje se slika bez izmena (radnja je ispod, kod prostora za prikaz)
+        Button preIPosle = new Button("Pre / posle (drži)");
+        preIPosle.setMaxWidth(Double.MAX_VALUE);
+        preIPosle.disableProperty().bind(prikaz.imageProperty().isNull());
+
         // Na glavnom prozoru ostaju samo dugmad
         VBox kontrole = new VBox(10,
                 otvori,
@@ -338,6 +404,7 @@ public class Main extends Application {
                 zatvori,
                 undoRedo,
                 resetuj,
+                preIPosle,
                 prikaziKomande);
         kontrole.setPadding(new Insets(15));
         kontrole.setPrefWidth(180);
@@ -356,8 +423,43 @@ public class Main extends Application {
         centar.setStyle("-fx-background-color: #2b2b2b;");
         centar.setMinSize(0, 0);
 
+        // Uvećana slika ne sme da prelazi preko dugmadi levo od nje
+        Rectangle granica = new Rectangle();
+        granica.widthProperty().bind(centar.widthProperty());
+        granica.heightProperty().bind(centar.heightProperty());
+        centar.setClip(granica);
+
+        // Točkić miša zumira, tako da tačka ispod kursora ostaje na mestu
+        centar.setOnScroll(e -> {
+            if (prikaz.getImage() == null || e.getDeltaY() == 0) {
+                return;
+            }
+            double novo = Math.max(1, Math.min(NAJVECE_UVECANJE, uvecanje * Math.pow(1.1, e.getDeltaY() / 40)));
+            if (novo == 1) {
+                ponistiUvecanje();
+                return;
+            }
+            // Slika se uvećava oko svog središta, koje je u sredini prostora za prikaz pomereno za pomak
+            double k = novo / uvecanje;
+            double sx = centar.getWidth() / 2;
+            double sy = centar.getHeight() / 2;
+            pomakX = e.getX() - sx - k * (e.getX() - sx - pomakX);
+            pomakY = e.getY() - sy - k * (e.getY() - sy - pomakY);
+            uvecanje = novo;
+            primeniPolozaj();
+        });
+        // Dvoklik vraća prikaz cele slike
+        centar.setOnMouseClicked(e -> {
+            if (e.getClickCount() == 2 && !biraIsecak) {
+                ponistiUvecanje();
+            }
+        });
+
         double[] pocetak = new double[2];
+        double[] poslednjaTacka = new double[2];
         centar.setOnMousePressed(e -> {
+            poslednjaTacka[0] = e.getX();
+            poslednjaTacka[1] = e.getY();
             if (biraIsecak) {
                 pocetak[0] = e.getX();
                 pocetak[1] = e.getY();
@@ -374,7 +476,14 @@ public class Main extends Application {
                 okvirIsecka.setY(Math.min(pocetak[1], e.getY()));
                 okvirIsecka.setWidth(Math.abs(e.getX() - pocetak[0]));
                 okvirIsecka.setHeight(Math.abs(e.getY() - pocetak[1]));
+            } else if (uvecanje > 1) {
+                // Prevlačenje pomera uvećanu sliku
+                pomakX += e.getX() - poslednjaTacka[0];
+                pomakY += e.getY() - poslednjaTacka[1];
+                primeniPolozaj();
             }
+            poslednjaTacka[0] = e.getX();
+            poslednjaTacka[1] = e.getY();
         });
         centar.setOnMouseReleased(e -> {
             if (!biraIsecak) {
@@ -389,8 +498,9 @@ public class Main extends Application {
             iseci.setText("Iseci (prevuci mišem preko slike)");
             iseciNaOkvir(pocetak[0], pocetak[1], e.getX(), e.getY());
         });
-        // Dok traje biranje isecka, kursor je krstić
-        centar.setOnMouseMoved(e -> centar.setCursor(biraIsecak ? Cursor.CROSSHAIR : Cursor.DEFAULT));
+        // Dok traje biranje isecka, kursor je krstić; kad je slika uvećana, ruka za pomeranje
+        centar.setOnMouseMoved(e -> centar.setCursor(
+                biraIsecak ? Cursor.CROSSHAIR : uvecanje > 1 ? Cursor.OPEN_HAND : Cursor.DEFAULT));
 
         prikaz.setPreserveRatio(true);
         // RGB efekat zavisi od veličine prikaza, pa ga osvežavamo i kad se prozor menja
@@ -402,7 +512,7 @@ public class Main extends Application {
         osveziEfekat();
         // Kad je slika okrenuta za 90° ili 270°, širina i visina prostora za prikaz menjaju uloge
         Runnable osveziVelicinu = () -> {
-            boolean uspravno = rotacija.getValue() % 2 == 1;
+            boolean uspravno = !prikazujeOriginal && rotacija.getValue() % 2 == 1;
             double sirina = centar.getWidth() - 20;
             double visina = centar.getHeight() - 20;
             prikaz.setFitWidth(uspravno ? visina : sirina);
@@ -411,6 +521,28 @@ public class Main extends Application {
         centar.widthProperty().addListener((o, s, n) -> osveziVelicinu.run());
         centar.heightProperty().addListener((o, s, n) -> osveziVelicinu.run());
         rotacija.valueProperty().addListener((o, s, n) -> osveziVelicinu.run());
+
+        // Pre / posle: privremeno se prikazuje učitana slika bez filtera, isecanja i rotacije
+        preIPosle.setOnMousePressed(e -> {
+            if (pregled == null) {
+                return;
+            }
+            prikazujeOriginal = true;
+            prikaz.setImage(pregled);
+            prikaz.setEffect(null);
+            prikaz.setOpacity(1);
+            primeniPolozaj();
+            osveziVelicinu.run();
+        });
+        preIPosle.setOnMouseReleased(e -> {
+            if (!prikazujeOriginal) {
+                return;
+            }
+            prikazujeOriginal = false;
+            osveziVelicinu.run();
+            osveziPregled();
+            osveziEfekat();
+        });
 
         BorderPane koren = new BorderPane();
         koren.setLeft(kontrole);
@@ -421,6 +553,9 @@ public class Main extends Application {
         dodajPrecice(scena);
         prozor.setScene(scena);
         prozor.show();
+        // Glavni prozor je 20 mm od leve ivice ekrana (po vertikali ostaje gde ga je sistem postavio)
+        Screen ekran = Screen.getPrimary();
+        prozor.setX(ekran.getVisualBounds().getMinX() + 20 / 25.4 * ekran.getDpi());
 
         // Prozor sa komandama je iste visine kao glavni prozor
         komande.setHeight(prozor.getHeight());
@@ -569,17 +704,211 @@ public class Main extends Application {
     }
 
     private void osveziEfekat() {
+        if (prikazujeOriginal) {
+            return;
+        }
         prikaz.setEffect(napraviEfekat(prikaz.getLayoutBounds().getWidth(), prikaz.getLayoutBounds().getHeight(), 1));
         prikaz.setOpacity(1 - providnost.getValue());
-        // Prvo se primenjuje ogledalo, pa rotacija (isto kao pri čuvanju u okreni(...))
-        prikaz.setRotate(90 * rotacija.getValue());
-        prikaz.setScaleX(ogledaloLevoDesno.getValue() == 1 ? -1 : 1);
-        prikaz.setScaleY(ogledaloGoreDole.getValue() == 1 ? -1 : 1);
+        primeniPolozaj();
+        zakaziHistogram();
+    }
+
+    // Više promena odjednom (npr. stil ili Undo) crta histogram samo jednom
+    private void zakaziHistogram() {
+        if (histogramZakazan) {
+            return;
+        }
+        histogramZakazan = true;
+        Platform.runLater(() -> {
+            histogramZakazan = false;
+            nacrtajHistogram();
+        });
+    }
+
+    // Histogram se računa iz umanjene kopije slike (najviše 256 piksela široke) sa istim efektima,
+    // tako da pokazuje izgled slike posle svih filtera
+    private void nacrtajHistogram() {
+        if (prikazujeOriginal) {
+            return;
+        }
+        Window prozorKomandi = histogram.getScene() == null ? null : histogram.getScene().getWindow();
+        if (prozorKomandi == null || !prozorKomandi.isShowing()) {
+            return;
+        }
+        GraphicsContext g = histogram.getGraphicsContext2D();
+        double w = histogram.getWidth();
+        double h = histogram.getHeight();
+        g.setFill(Color.web("#2b2b2b"));
+        g.fillRect(0, 0, w, h);
+        Image slika = prikaz.getImage();
+        if (slika == null) {
+            return;
+        }
+
+        ImageView mala = new ImageView(slika);
+        mala.setPreserveRatio(true);
+        mala.setFitWidth(Math.min(256, slika.getWidth()));
+        double mw = mala.getLayoutBounds().getWidth();
+        double mh = mala.getLayoutBounds().getHeight();
+        double sirinaPrikaza = prikaz.getLayoutBounds().getWidth();
+        mala.setEffect(napraviEfekat(mw, mh, sirinaPrikaza > 0 ? mw / sirinaPrikaza : 1));
+        SnapshotParameters parametri = new SnapshotParameters();
+        parametri.setViewport(new Rectangle2D(0, 0, mw, mh));
+        WritableImage snimak = mala.snapshot(parametri, null);
+
+        // Broj piksela za svaku vrednost 0-255: osvetljenost, crvena, zelena, plava
+        int[][] broj = new int[4][256];
+        PixelReader citac = snimak.getPixelReader();
+        for (int y = 0; y < (int) snimak.getHeight(); y++) {
+            for (int x = 0; x < (int) snimak.getWidth(); x++) {
+                int c = citac.getArgb(x, y);
+                if ((c >>> 24) == 0) {
+                    continue;
+                }
+                int r = (c >> 16) & 0xFF;
+                int gr = (c >> 8) & 0xFF;
+                int b = c & 0xFF;
+                broj[0][(299 * r + 587 * gr + 114 * b) / 1000]++;
+                broj[1][r]++;
+                broj[2][gr]++;
+                broj[3][b]++;
+            }
+        }
+        // Visina se meri prema najvišem stubu osvetljenosti, bez potpuno crnih i belih piksela
+        // (kojih zna da bude mnogo, pa bi ostatak bio prenizak)
+        int najvise = 1;
+        for (int i = 1; i < 255; i++) {
+            najvise = Math.max(najvise, broj[0][i]);
+        }
+
+        g.setFill(Color.gray(0.75, 0.6));
+        g.beginPath();
+        g.moveTo(0, h);
+        for (int i = 0; i < 256; i++) {
+            g.lineTo(i * w / 255, h - Math.min(h, h * 0.95 * broj[0][i] / najvise));
+        }
+        g.lineTo(w, h);
+        g.closePath();
+        g.fill();
+
+        Color[] boje = {Color.rgb(255, 80, 80, 0.9), Color.rgb(80, 220, 80, 0.9), Color.rgb(90, 140, 255, 0.9)};
+        g.setLineWidth(1);
+        for (int k = 0; k < 3; k++) {
+            g.setStroke(boje[k]);
+            g.beginPath();
+            for (int i = 0; i < 256; i++) {
+                double x = i * w / 255;
+                double y = h - Math.min(h, h * 0.95 * broj[k + 1][i] / najvise);
+                if (i == 0) {
+                    g.moveTo(x, y);
+                } else {
+                    g.lineTo(x, y);
+                }
+            }
+            g.stroke();
+        }
+    }
+
+    private Preferences cvorStilova() {
+        return podesavanjaPrograma.node("stilovi");
+    }
+
+    // Čuva vrednosti klizača koje nisu 0, u obliku "svetlina=0.2;kontrast=-0.1"
+    private void sacuvajStil() {
+        TextInputDialog unos = new TextInputDialog();
+        unos.setTitle("Sačuvaj stil");
+        unos.setHeaderText(null);
+        unos.setContentText("Ime stila:");
+        if (histogram.getScene() != null) {
+            unos.initOwner(histogram.getScene().getWindow());
+        }
+        Optional<String> ime = unos.showAndWait().map(String::trim).filter(s -> !s.isEmpty());
+        if (ime.isEmpty()) {
+            return;
+        }
+        String naziv = ime.get();
+        if (naziv.length() > Preferences.MAX_KEY_LENGTH) {
+            naziv = naziv.substring(0, Preferences.MAX_KEY_LENGTH);
+        }
+        StringBuilder zapis = new StringBuilder();
+        kljuceviStilova.forEach((kljuc, klizac) -> {
+            if (klizac.getValue() != 0) {
+                zapis.append(kljuc).append('=').append(klizac.getValue()).append(';');
+            }
+        });
+        cvorStilova().put(naziv, zapis.toString());
+        osveziMojeStilove();
+    }
+
+    private Map<Slider, Double> procitajStil(String ime) {
+        Map<Slider, Double> stil = new HashMap<>();
+        for (String deo : cvorStilova().get(ime, "").split(";")) {
+            String[] kljucIVrednost = deo.split("=");
+            Slider klizac = kljucIVrednost.length == 2 ? kljuceviStilova.get(kljucIVrednost[0]) : null;
+            if (klizac != null) {
+                try {
+                    stil.put(klizac, Double.parseDouble(kljucIVrednost[1]));
+                } catch (NumberFormatException ignored) {
+                    // Oštećen zapis se preskače
+                }
+            }
+        }
+        return stil;
+    }
+
+    // Pravi dugme za svaki sačuvani stil (po abecedi), sa dugmetom za brisanje pored
+    private void osveziMojeStilove() {
+        mojiStilovi.getChildren().clear();
+        String[] imena;
+        try {
+            imena = cvorStilova().keys();
+        } catch (BackingStoreException e) {
+            imena = new String[0];
+        }
+        Arrays.sort(imena, String.CASE_INSENSITIVE_ORDER);
+        for (String ime : imena) {
+            Button primeni = napraviDugme(ime, () -> primeniStil(procitajStil(ime)));
+            HBox.setHgrow(primeni, Priority.ALWAYS);
+            Button obrisi = new Button("Obriši");
+            obrisi.setOnAction(e -> {
+                Alert pitanje = new Alert(Alert.AlertType.CONFIRMATION,
+                        "Obrisati stil \"" + ime + "\"?", ButtonType.YES, ButtonType.NO);
+                pitanje.setTitle("Obriši stil");
+                pitanje.setHeaderText(null);
+                pitanje.initOwner(obrisi.getScene().getWindow());
+                if (pitanje.showAndWait().orElse(ButtonType.NO) == ButtonType.YES) {
+                    cvorStilova().remove(ime);
+                    osveziMojeStilove();
+                }
+            });
+            mojiStilovi.getChildren().add(new HBox(5, primeni, obrisi));
+        }
+        if (imena.length == 0) {
+            mojiStilovi.getChildren().add(new Label("Još nema sačuvanih stilova."));
+        }
+    }
+
+    // Rotacija, ogledalo, zumiranje i pomeranje prikaza.
+    // Prvo se primenjuje ogledalo, pa rotacija (isto kao pri čuvanju u okreni(...))
+    private void primeniPolozaj() {
+        boolean saIzmenama = !prikazujeOriginal;
+        prikaz.setRotate(saIzmenama ? 90 * rotacija.getValue() : 0);
+        prikaz.setScaleX((saIzmenama && ogledaloLevoDesno.getValue() == 1 ? -1 : 1) * uvecanje);
+        prikaz.setScaleY((saIzmenama && ogledaloGoreDole.getValue() == 1 ? -1 : 1) * uvecanje);
+        prikaz.setTranslateX(pomakX);
+        prikaz.setTranslateY(pomakY);
+    }
+
+    private void ponistiUvecanje() {
+        uvecanje = 1;
+        pomakX = 0;
+        pomakY = 0;
+        primeniPolozaj();
     }
 
     // Ponovo primenjuje umetničke filtere na umanjenu kopiju slike koja se prikazuje
     private void osveziPregled() {
-        if (pregled == null) {
+        if (pregled == null || prikazujeOriginal) {
             return;
         }
         double sirinaPrikaza = prikaz.getLayoutBounds().getWidth();
@@ -610,6 +939,8 @@ public class Main extends Application {
         if (doX - odX < 0.01 || doY - odY < 0.01) {
             return;
         }
+        // Isečena slika se prikazuje cela, bez zumiranja
+        ponistiUvecanje();
         // Novi isečak je deo već isečenog dela, pa se preračunava u udeo cele slike
         double levo = isecanjeLevo.getValue();
         double gore = isecanjeGore.getValue();
@@ -936,7 +1267,10 @@ public class Main extends Application {
     private static Tab napraviKarticu(String naziv, Node... sadrzaj) {
         VBox okvir = new VBox(10, sadrzaj);
         okvir.setPadding(new Insets(15));
-        Tab kartica = new Tab(naziv, okvir);
+        // Ako sadržaj ne stane u prozor, kartica dobija traku za pomeranje
+        ScrollPane klizanje = new ScrollPane(okvir);
+        klizanje.setFitToWidth(true);
+        Tab kartica = new Tab(naziv, klizanje);
         kartica.setClosable(false);
         return kartica;
     }
@@ -1047,6 +1381,9 @@ public class Main extends Application {
 
     // Zatvara sliku bez čuvanja i vraća sve klizače i istoriju na početak
     private void zatvoriSliku() {
+        uvecanje = 1;
+        pomakX = 0;
+        pomakY = 0;
         original = null;
         pregled = null;
         prikaz.setImage(null);
