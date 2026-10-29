@@ -4,10 +4,12 @@ import javafx.application.Application;
 import javafx.application.Platform;
 import javafx.beans.binding.Bindings;
 import javafx.collections.FXCollections;
+import javafx.geometry.Bounds;
 import javafx.geometry.Insets;
 import javafx.geometry.Point2D;
 import javafx.geometry.Pos;
 import javafx.geometry.Rectangle2D;
+import javafx.geometry.VPos;
 import javafx.scene.Cursor;
 import javafx.scene.Node;
 import javafx.scene.Scene;
@@ -17,7 +19,9 @@ import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
 import javafx.scene.control.ButtonType;
+import javafx.scene.control.CheckBox;
 import javafx.scene.control.ChoiceBox;
+import javafx.scene.control.ColorPicker;
 import javafx.scene.control.Label;
 import javafx.scene.control.MenuButton;
 import javafx.scene.control.MenuItem;
@@ -28,6 +32,7 @@ import javafx.scene.control.SeparatorMenuItem;
 import javafx.scene.control.Slider;
 import javafx.scene.control.Tab;
 import javafx.scene.control.TabPane;
+import javafx.scene.control.TextField;
 import javafx.scene.control.TextInputDialog;
 import javafx.scene.control.Tooltip;
 import javafx.scene.effect.Blend;
@@ -58,6 +63,10 @@ import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
 import javafx.scene.paint.Color;
 import javafx.scene.shape.Rectangle;
+import javafx.scene.text.Font;
+import javafx.scene.text.FontWeight;
+import javafx.scene.text.Text;
+import javafx.stage.DirectoryChooser;
 import javafx.stage.FileChooser;
 import javafx.stage.Modality;
 import javafx.stage.Screen;
@@ -71,6 +80,7 @@ import javax.imageio.ImageIO;
 import javax.imageio.ImageWriteParam;
 import javax.imageio.ImageWriter;
 import javax.imageio.stream.ImageOutputStream;
+import java.awt.FontMetrics;
 import java.awt.Graphics2D;
 import java.awt.RenderingHints;
 import java.awt.image.BufferedImage;
@@ -153,10 +163,42 @@ public class Main extends Application {
     private final Slider isecanjeGore = new Slider(0, 1, 0);
     private final Slider isecanjeDesno = new Slider(0, 1, 0);
     private final Slider isecanjeDole = new Slider(0, 1, 0);
-    // Gotovi stilovi ne diraju geometriju i isecanje
-    private final List<Slider> geometrijskiKlizaci = List.of(
+
+    // Tekst na slici. Crta se preko gotove slike (posle svih filtera i rotacije), pa ga filteri ne menjaju.
+    // Sam tekst nije broj, pa se čuva u spisku tekstovi, a skriveni klizač tekstIndeks pamti njegov
+    // redni broj; tako i tekst radi sa Undo/Redo i proverom nesačuvanih izmena (0 = bez teksta).
+    private final List<String> tekstovi = new ArrayList<>(List.of(""));
+    private final Slider tekstIndeks = new Slider(0, 1e9, 0);
+    private final TextField tekstPolje = new TextField();
+    // velicina: 0 = najmanji (3% visine slike), 1 = najveći (23%); polozaj: -1 = levo/gore, 0 = sredina, 1 = desno/dole
+    private final Slider velicinaTeksta = new Slider(0, 1, 0);
+    private final Slider tekstX = new Slider(-1, 1, 0);
+    private final Slider tekstY = new Slider(-1, 1, 0);
+    private final Slider senkaTeksta = new Slider(0, 1, 0);
+    // Skriveni klizači za izbor fonta, podebljanja i boje (menjaju se preko izbornika na kartici "Tekst")
+    private static final List<String> FONTOVI = List.of(
+            "Arial", "Verdana", "Times New Roman", "Georgia", "Courier New", "Impact", "Comic Sans MS");
+    private final Slider fontTeksta = new Slider(0, FONTOVI.size() - 1, 0);
+    private final Slider podebljanTekst = new Slider(0, 1, 0);
+    private final Slider bojaTeksta = new Slider(0, 0xFFFFFFFFL, 0);
+
+    // Okvir oko slike: debljina je udeo kraće strane slike (0 = bez okvira);
+    // polaroid ima 3,5 puta širu donju ivicu
+    private final Slider debljinaOkvira = new Slider(0, 0.2, 0);
+    private final Slider polaroidOkvir = new Slider(0, 1, 0);
+    private final Slider bojaOkvira = new Slider(0, 0xFFFFFFFFL, 0);
+
+    // Prikaz teksta i okvira preko slike na glavnom prozoru
+    private final Rectangle okvirPrikaz = new Rectangle();
+    private final Text tekstPrikaz = new Text();
+    private final Text senkaPrikaz = new Text();
+
+    // Gotovi stilovi ne diraju geometriju, isecanje, tekst i okvir
+    private final List<Slider> klizaciVanStila = List.of(
             rotacija, ogledaloLevoDesno, ogledaloGoreDole,
-            isecanjeLevo, isecanjeGore, isecanjeDesno, isecanjeDole);
+            isecanjeLevo, isecanjeGore, isecanjeDesno, isecanjeDole,
+            tekstIndeks, velicinaTeksta, tekstX, tekstY, senkaTeksta, fontTeksta, podebljanTekst, bojaTeksta,
+            debljinaOkvira, polaroidOkvir, bojaOkvira);
     // true dok korisnik mišem bira deo slike za isecanje
     private boolean biraIsecak = false;
 
@@ -216,7 +258,9 @@ public class Main extends Application {
             sepija, sjaj, bloom, zamucenje, zamucenjePokretom, ugaoPokreta,
             rotacija, ogledaloLevoDesno, ogledaloGoreDole,
             pikselizacija, posterizacija, reljef, crtez, uljanaSlika, akvarel,
-            senke, svetla, isecanjeLevo, isecanjeGore, isecanjeDesno, isecanjeDole);
+            senke, svetla, isecanjeLevo, isecanjeGore, isecanjeDesno, isecanjeDole,
+            tekstIndeks, velicinaTeksta, tekstX, tekstY, senkaTeksta, fontTeksta, podebljanTekst, bojaTeksta,
+            debljinaOkvira, polaroidOkvir, bojaOkvira);
 
     // Učitana slika u punoj rezoluciji (koristi se pri čuvanju) i njena umanjena kopija
     // za prikaz, da umetnički filteri rade brzo i na velikim slikama
@@ -333,6 +377,38 @@ public class Main extends Application {
             }
         });
 
+        // Tekst se upisuje u istoriju kad se pritisne Enter ili kad polje izgubi fokus,
+        // a ne posle svakog slova (inače bi Undo brisao slovo po slovo); prikaz se osvežava odmah
+        tekstPolje.setPromptText("Upiši tekst i pritisni Enter");
+        tekstPolje.setOnAction(e -> potvrdiTekst());
+        tekstPolje.focusedProperty().addListener((o, s, fokus) -> {
+            if (!fokus) {
+                potvrdiTekst();
+            }
+        });
+        tekstPolje.textProperty().addListener((o, s, n) -> osveziDodatke());
+        tekstIndeks.valueProperty().addListener((o, s, n) -> {
+            String tekst = tekstovi.get(Math.min(tekstovi.size() - 1, n.intValue()));
+            if (!tekstPolje.getText().equals(tekst)) {
+                tekstPolje.setText(tekst);
+            }
+        });
+
+        ChoiceBox<String> fontIzbor = new ChoiceBox<>(FXCollections.observableArrayList(FONTOVI));
+        fontIzbor.setMaxWidth(Double.MAX_VALUE);
+        poveziIzbor(fontIzbor, fontTeksta);
+        CheckBox podebljano = new CheckBox("Podebljano");
+        podebljano.selectedProperty().addListener((o, s, n) -> podebljanTekst.setValue(n ? 1 : 0));
+        podebljanTekst.valueProperty().addListener((o, s, n) -> podebljano.setSelected(n.doubleValue() == 1));
+        ColorPicker bojaTekstaIzbor = new ColorPicker();
+        poveziBoju(bojaTekstaIzbor, bojaTeksta);
+
+        ChoiceBox<String> vrstaOkvira = new ChoiceBox<>(FXCollections.observableArrayList("Običan", "Polaroid"));
+        vrstaOkvira.setMaxWidth(Double.MAX_VALUE);
+        poveziIzbor(vrstaOkvira, polaroidOkvir);
+        ColorPicker bojaOkviraIzbor = new ColorPicker();
+        poveziBoju(bojaOkviraIzbor, bojaOkvira);
+
         // Isecanje: posle klika na dugme korisnik mišem prevlači pravougaonik preko slike
         Button iseci = napraviDugme("Iseci (prevuci mišem preko slike)", () -> {});
         iseci.setOnAction(e -> {
@@ -344,6 +420,8 @@ public class Main extends Application {
         // Nova grupa komandi se dodaje kao nova kartica preko napraviKarticu(...)
         TabPane kartice = new TabPane(
                 napraviKarticu("Svetlo",
+                        napraviDugme("Automatski popravi", this::automatskiPopravi),
+                        new Separator(),
                         new Label("Svetlina"), svetlina,
                         new Label("Kontrast"), kontrast,
                         new Separator(),
@@ -383,6 +461,20 @@ public class Main extends Application {
                         iseci,
                         napraviDugme("Vrati celu sliku", () -> postaviVise(Map.of(
                                 isecanjeLevo, 0.0, isecanjeGore, 0.0, isecanjeDesno, 0.0, isecanjeDole, 0.0)))),
+                napraviKarticu("Tekst",
+                        new Label("Tekst na slici"), tekstPolje,
+                        new Label("Font"), fontIzbor, podebljano,
+                        new Label("Boja"), bojaTekstaIzbor,
+                        new Label("Veličina"), velicinaTeksta,
+                        new Label("Položaj levo - desno"), tekstX,
+                        new Label("Položaj gore - dole"), tekstY,
+                        new Label("Senka"), senkaTeksta,
+                        new Label("Tekst se ne menja filterima i uvek ostaje oštar.")),
+                napraviKarticu("Okvir",
+                        new Label("Debljina okvira"), debljinaOkvira,
+                        new Label("Vrsta"), vrstaOkvira,
+                        new Label("Boja"), bojaOkviraIzbor,
+                        new Label("Okvir se dodaje oko slike, pa je sačuvana slika veća.")),
                 napraviKarticu("Umetnički",
                         new Label("Pikselizacija"), pikselizacija,
                         new Label("Posterizacija"), posterizacija,
@@ -417,7 +509,13 @@ public class Main extends Application {
                         new Label("Veličina sačuvane slike"), najvecaStrana,
                         new Separator(),
                         oznakaKvaliteta, kvalitetJpg,
-                        new Label("Manji kvalitet daje manji fajl. PNG se uvek čuva bez gubitka kvaliteta.")));
+                        new Label("Manji kvalitet daje manji fajl. PNG se uvek čuva bez gubitka kvaliteta."),
+                        new Separator(),
+                        new Label("Obrada više slika odjednom"),
+                        napraviDugme("Obradi više slika…", () -> obradiViseSlika(glavniProzor)),
+                        new Label("Na svaku izabranu sliku primenjuju se sva trenutna podešavanja\n"
+                                + "(filteri, isecanje, rotacija, tekst, okvir i veličina iznad).\n"
+                                + "Originali se ne menjaju.")));
         osveziMojeStilove();
 
         Stage komande = new Stage();
@@ -490,7 +588,14 @@ public class Main extends Application {
         Pane slojIsecka = new Pane(okvirIsecka);
         slojIsecka.setMouseTransparent(true);
 
-        StackPane centar = new StackPane(prikaz, slojIsecka);
+        // Okvir je ispod slike (slika ga prekriva u sredini), a tekst iznad nje
+        Pane slojOkvira = new Pane(okvirPrikaz);
+        slojOkvira.setMouseTransparent(true);
+        tekstPrikaz.setTextOrigin(VPos.CENTER);
+        senkaPrikaz.setTextOrigin(VPos.CENTER);
+        Pane slojTeksta = new Pane(senkaPrikaz, tekstPrikaz);
+        slojTeksta.setMouseTransparent(true);
+        StackPane centar = new StackPane(slojOkvira, prikaz, slojTeksta, slojIsecka);
         centar.setStyle("-fx-background-color: #2b2b2b;");
         centar.setMinSize(0, 0);
 
@@ -581,17 +686,23 @@ public class Main extends Application {
             osveziPregled();
         });
         osveziEfekat();
-        // Kad je slika okrenuta za 90° ili 270°, širina i visina prostora za prikaz menjaju uloge
+        // Tekst i okvir prate sliku i kad se ona pomeri, zumira ili okrene
+        prikaz.boundsInParentProperty().addListener((o, s, n) -> osveziDodatke());
+        // Kad je slika okrenuta za 90° ili 270°, širina i visina prostora za prikaz menjaju uloge.
+        // Mesto za okvir se oduzima, da slika sa okvirom cela stane na ekran.
         Runnable osveziVelicinu = () -> {
             boolean uspravno = !prikazujeOriginal && rotacija.getValue() % 2 == 1;
-            double sirina = centar.getWidth() - 20;
-            double visina = centar.getHeight() - 20;
+            double okvir = debljinaOkvira.getValue();
+            double sirina = (centar.getWidth() - 20) / (1 + 2 * okvir);
+            double visina = (centar.getHeight() - 20) / (1 + (polaroidOkvir.getValue() == 1 ? 4.5 : 2) * okvir);
             prikaz.setFitWidth(uspravno ? visina : sirina);
             prikaz.setFitHeight(uspravno ? sirina : visina);
         };
         centar.widthProperty().addListener((o, s, n) -> osveziVelicinu.run());
         centar.heightProperty().addListener((o, s, n) -> osveziVelicinu.run());
         rotacija.valueProperty().addListener((o, s, n) -> osveziVelicinu.run());
+        debljinaOkvira.valueProperty().addListener((o, s, n) -> osveziVelicinu.run());
+        polaroidOkvir.valueProperty().addListener((o, s, n) -> osveziVelicinu.run());
 
         // Pre / posle: privremeno se prikazuje učitana slika bez filtera, isecanja i rotacije
         preIPosle.setOnMousePressed(e -> {
@@ -1002,6 +1113,234 @@ public class Main extends Application {
         prikaz.setScaleY((saIzmenama && ogledaloGoreDole.getValue() == 1 ? -1 : 1) * uvecanje);
         prikaz.setTranslateX(pomakX);
         prikaz.setTranslateY(pomakY);
+        osveziDodatke();
+    }
+
+    // Automatsko popravljanje: na osnovu slike (bez efekata) podešava svetlinu, kontrast i ravnotežu boja.
+    // Ostali klizači se ne diraju, a sve promene su jedan korak za Undo.
+    private void automatskiPopravi() {
+        Image slika = prikaz.getImage();
+        if (slika == null) {
+            return;
+        }
+        int w = (int) slika.getWidth();
+        int h = (int) slika.getHeight();
+        // Dovoljno je pogledati oko 100.000 piksela, ravnomerno raspoređenih po slici
+        int korak = Math.max(1, (int) Math.sqrt((double) w * h / 100_000));
+        PixelReader citac = slika.getPixelReader();
+        int[] brojPoOsvetljenosti = new int[256];
+        long zbirR = 0, zbirG = 0, zbirB = 0, ukupno = 0;
+        for (int y = 0; y < h; y += korak) {
+            for (int x = 0; x < w; x += korak) {
+                int c = citac.getArgb(x, y);
+                if ((c >>> 24) == 0) {
+                    continue;
+                }
+                int r = (c >> 16) & 0xFF;
+                int g = (c >> 8) & 0xFF;
+                int b = c & 0xFF;
+                brojPoOsvetljenosti[(299 * r + 587 * g + 114 * b) / 1000]++;
+                zbirR += r;
+                zbirG += g;
+                zbirB += b;
+                ukupno++;
+            }
+        }
+        if (ukupno == 0) {
+            return;
+        }
+
+        // Najtamnijih i najsvetlijih 1% piksela se zanemaruje (npr. odsjaji), da ne pokvare procenu
+        int tamno = -1, svetlo = 255;
+        long brojac = 0;
+        double zbirOsvetljenosti = 0;
+        for (int i = 0; i < 256; i++) {
+            brojac += brojPoOsvetljenosti[i];
+            zbirOsvetljenosti += (double) i * brojPoOsvetljenosti[i];
+            if (tamno < 0 && brojac >= ukupno * 0.01) {
+                tamno = i;
+            }
+            if (brojac <= ukupno * 0.99) {
+                svetlo = i;
+            }
+        }
+        double prosek = zbirOsvetljenosti / ukupno / 255;
+        double raspon = Math.max(0, svetlo - tamno) / 255.0;
+
+        // Previše tamna ili svetla slika se pomera ka sredini, a slika malog raspona dobija više kontrasta
+        double novaSvetlina = ogranici((0.5 - prosek) * 0.8, -0.4, 0.4);
+        double noviKontrast = ogranici((0.85 - raspon) * 0.8, -0.2, 0.5);
+        // Ravnoteža boja ("siva u proseku"): prosečna boja slike treba da bude neutralno siva
+        double sivo = (zbirR + zbirG + zbirB) / 3.0;
+        double novaCrvena = zbirR > 0 ? ogranici(sivo / zbirR - 1, -0.25, 0.25) : 0;
+        double novaZelena = zbirG > 0 ? ogranici(sivo / zbirG - 1, -0.25, 0.25) : 0;
+        double novaPlava = zbirB > 0 ? ogranici(sivo / zbirB - 1, -0.25, 0.25) : 0;
+        postaviVise(Map.of(
+                svetlina, zaokruzi(novaSvetlina), kontrast, zaokruzi(noviKontrast),
+                crvena, zaokruzi(novaCrvena), zelena, zaokruzi(novaZelena), plava, zaokruzi(novaPlava)));
+    }
+
+    private static double ogranici(double vrednost, double najmanje, double najvise) {
+        return Math.max(najmanje, Math.min(najvise, vrednost));
+    }
+
+    private static double zaokruzi(double vrednost) {
+        return Math.round(vrednost * 100) / 100.0;
+    }
+
+    // Upisuje tekst iz polja u istoriju (kao redni broj u spisku tekstovi)
+    private void potvrdiTekst() {
+        String tekst = tekstPolje.getText();
+        int indeks = tekstovi.indexOf(tekst);
+        if (indeks < 0) {
+            tekstovi.add(tekst);
+            indeks = tekstovi.size() - 1;
+        }
+        tekstIndeks.setValue(indeks);
+    }
+
+    // Povezuje izbornik sa skrivenim klizačem koji pamti redni broj izabrane stavke
+    private static void poveziIzbor(ChoiceBox<String> izbor, Slider klizac) {
+        izbor.getSelectionModel().select((int) klizac.getValue());
+        izbor.getSelectionModel().selectedIndexProperty().addListener((o, s, n) -> {
+            if (n.intValue() >= 0) {
+                klizac.setValue(n.intValue());
+            }
+        });
+        klizac.valueProperty().addListener((o, s, n) -> izbor.getSelectionModel().select(n.intValue()));
+    }
+
+    // Povezuje izbor boje sa skrivenim klizačem. Klizač čuva boju kao obrnut ARGB broj,
+    // da bi početna vrednost 0 (i posle Resetuj) značila neprovidnu belu boju.
+    private static void poveziBoju(ColorPicker izbor, Slider klizac) {
+        izbor.setValue(uBoju(klizac.getValue()));
+        izbor.valueProperty().addListener((o, s, n) -> klizac.setValue(izBoje(n)));
+        klizac.valueProperty().addListener((o, s, n) -> izbor.setValue(uBoju(n.doubleValue())));
+    }
+
+    private static Color uBoju(double vrednost) {
+        long argb = ~(long) vrednost & 0xFFFFFFFFL;
+        return Color.rgb((int) (argb >> 16) & 0xFF, (int) (argb >> 8) & 0xFF, (int) argb & 0xFF,
+                ((argb >> 24) & 0xFF) / 255.0);
+    }
+
+    private static double izBoje(Color boja) {
+        long argb = Math.round(boja.getOpacity() * 255) << 24 | Math.round(boja.getRed() * 255) << 16
+                | Math.round(boja.getGreen() * 255) << 8 | Math.round(boja.getBlue() * 255);
+        return ~argb & 0xFFFFFFFFL;
+    }
+
+    // Podešavanja teksta i okvira u jednom komadu, da bi se mogla koristiti i u pozadini pri čuvanju
+    private record Dodaci(String tekst, String font, boolean podebljano, double velicina, double x, double y,
+                          Color boja, double senka, double okvir, boolean polaroid, Color bojaOkvira) {
+
+        double velicinaFonta(double visinaSlike) {
+            return (0.03 + 0.2 * velicina) * visinaSlike;
+        }
+
+        // Debljina okvira sa strane i gore, i debljina donje ivice, u pikselima
+        double debljina(double sirinaSlike, double visinaSlike) {
+            return okvir * Math.min(sirinaSlike, visinaSlike);
+        }
+
+        double donjaIvica(double sirinaSlike, double visinaSlike) {
+            return debljina(sirinaSlike, visinaSlike) * (polaroid ? 3.5 : 1);
+        }
+
+        // Senka je pomerena udesno i nadole za 6% veličine slova
+        double pomakSenke(double velicinaFonta) {
+            return velicinaFonta * 0.06;
+        }
+    }
+
+    private Dodaci trenutniDodaci() {
+        return new Dodaci(tekstPolje.getText(), FONTOVI.get((int) fontTeksta.getValue()),
+                podebljanTekst.getValue() == 1, velicinaTeksta.getValue(), tekstX.getValue(), tekstY.getValue(),
+                uBoju(bojaTeksta.getValue()), senkaTeksta.getValue(),
+                debljinaOkvira.getValue(), polaroidOkvir.getValue() == 1, uBoju(bojaOkvira.getValue()));
+    }
+
+    // Postavlja tekst i okvir preko slike na glavnom prozoru, prema tome gde se slika trenutno vidi
+    private void osveziDodatke() {
+        Dodaci d = trenutniDodaci();
+        boolean vidljivo = prikaz.getImage() != null && !prikazujeOriginal;
+        // Granice slike u prostoru za prikaz, posle rotacije, ogledala i zumiranja (bez proširenja od efekata)
+        Bounds slika = prikaz.localToParent(prikaz.getLayoutBounds());
+        double w = slika.getWidth();
+        double h = slika.getHeight();
+
+        double debljina = d.debljina(w, h);
+        okvirPrikaz.setVisible(vidljivo && debljina > 0);
+        okvirPrikaz.setFill(d.bojaOkvira());
+        okvirPrikaz.setX(slika.getMinX() - debljina);
+        okvirPrikaz.setY(slika.getMinY() - debljina);
+        okvirPrikaz.setWidth(w + 2 * debljina);
+        okvirPrikaz.setHeight(h + debljina + d.donjaIvica(w, h));
+
+        boolean imaTeksta = vidljivo && !d.tekst().isBlank();
+        double velicinaFonta = d.velicinaFonta(h);
+        Font font = Font.font(d.font(), d.podebljano() ? FontWeight.BOLD : FontWeight.NORMAL, velicinaFonta);
+        double cx = slika.getMinX() + w / 2 + d.x() * w / 2;
+        double cy = slika.getMinY() + h / 2 + d.y() * h / 2;
+        for (Text t : List.of(tekstPrikaz, senkaPrikaz)) {
+            t.setText(d.tekst());
+            t.setFont(font);
+            t.setX(cx - t.getLayoutBounds().getWidth() / 2);
+            t.setY(cy);
+        }
+        tekstPrikaz.setFill(d.boja());
+        tekstPrikaz.setVisible(imaTeksta);
+        double pomak = d.pomakSenke(velicinaFonta);
+        senkaPrikaz.setX(senkaPrikaz.getX() + pomak);
+        senkaPrikaz.setY(cy + pomak);
+        senkaPrikaz.setFill(Color.color(0, 0, 0, d.senka()));
+        senkaPrikaz.setVisible(imaTeksta && d.senka() > 0);
+    }
+
+    // Crta tekst i okvir na gotovu sliku (posle filtera i rotacije), isto kao na prikazu
+    private static BufferedImage dodajTekstIOkvir(BufferedImage slika, Dodaci d) {
+        int w = slika.getWidth();
+        int h = slika.getHeight();
+        if (!d.tekst().isBlank()) {
+            Graphics2D crtanje = slika.createGraphics();
+            crtanje.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+            crtanje.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            float velicinaFonta = (float) d.velicinaFonta(h);
+            crtanje.setFont(new java.awt.Font(d.font(), d.podebljano() ? java.awt.Font.BOLD : java.awt.Font.PLAIN, 1)
+                    .deriveFont(velicinaFonta));
+            FontMetrics mere = crtanje.getFontMetrics();
+            double cx = w / 2.0 + d.x() * w / 2;
+            double cy = h / 2.0 + d.y() * h / 2;
+            // Red teksta je centriran po visini oko tačke cy, kao i na prikazu
+            float x = (float) (cx - mere.stringWidth(d.tekst()) / 2.0);
+            float y = (float) (cy + (mere.getAscent() - mere.getDescent()) / 2.0);
+            if (d.senka() > 0) {
+                float pomak = (float) d.pomakSenke(velicinaFonta);
+                crtanje.setColor(new java.awt.Color(0, 0, 0, (float) d.senka()));
+                crtanje.drawString(d.tekst(), x + pomak, y + pomak);
+            }
+            crtanje.setColor(uAwtBoju(d.boja()));
+            crtanje.drawString(d.tekst(), x, y);
+            crtanje.dispose();
+        }
+
+        int debljina = (int) Math.round(d.debljina(w, h));
+        if (debljina <= 0) {
+            return slika;
+        }
+        int donja = (int) Math.round(d.donjaIvica(w, h));
+        BufferedImage saOkvirom = new BufferedImage(w + 2 * debljina, h + debljina + donja, slika.getType());
+        Graphics2D crtanje = saOkvirom.createGraphics();
+        crtanje.setColor(uAwtBoju(d.bojaOkvira()));
+        crtanje.fillRect(0, 0, saOkvirom.getWidth(), saOkvirom.getHeight());
+        crtanje.drawImage(slika, debljina, debljina, null);
+        crtanje.dispose();
+        return saOkvirom;
+    }
+
+    private static java.awt.Color uAwtBoju(Color boja) {
+        return new java.awt.Color((float) boja.getRed(), (float) boja.getGreen(), (float) boja.getBlue(),
+                (float) boja.getOpacity());
     }
 
     private void ponistiUvecanje() {
@@ -1066,11 +1405,12 @@ public class Main extends Application {
         zabeleziStanje();
     }
 
-    // Gotov stil: svi klizači osim geometrije i isecanja se vraćaju na 0, pa se postavljaju vrednosti stila
+    // Gotov stil: svi klizači osim geometrije, isecanja, teksta i okvira se vraćaju na 0,
+    // pa se postavljaju vrednosti stila
     private void primeniStil(Map<Slider, Double> stil) {
         bezBelezenja = true;
         for (Slider klizac : sviKlizaci) {
-            if (!geometrijskiKlizaci.contains(klizac)) {
+            if (!klizaciVanStila.contains(klizac)) {
                 klizac.setValue(stil.getOrDefault(klizac, 0.0));
             }
         }
@@ -1561,6 +1901,8 @@ public class Main extends Application {
 
     // Vraća true ako nema nesačuvanih izmena ili ako korisnik potvrdi da ih odbacuje
     private boolean smeDaOdbaciIzmene(Stage prozor, String naslov, String pitanjeTekst) {
+        // Tekst koji se još kuca takođe je izmena
+        potvrdiTekst();
         if (prikaz.getImage() == null || Arrays.equals(trenutnoStanje(), sacuvanoStanje)) {
             return true;
         }
@@ -1589,6 +1931,7 @@ public class Main extends Application {
     }
 
     private void sacuvajSliku(Stage prozor) {
+        potvrdiTekst();
         FileChooser izbor = new FileChooser();
         izbor.setTitle("Sačuvaj fotografiju");
         FileChooser.ExtensionFilter png = new FileChooser.ExtensionFilter("PNG slika", "*.png");
@@ -1620,52 +1963,22 @@ public class Main extends Application {
         Image izvor = original;
         File odrediste = fajl;
         double[] stanjePriCuvanju = trenutnoStanje();
-        double alfa = 1 - providnost.getValue();
-        int kvartovi = (int) rotacija.getValue();
-        boolean levoDesno = ogledaloLevoDesno.getValue() == 1;
-        boolean goreDole = ogledaloGoreDole.getValue() == 1;
-        int najvecaDuzaStrana = najvecaStrana.getValue() == null ? 0 : najvecaStrana.getValue();
-        float kvalitet = (float) kvalitetJpg.getValue();
-        Stage poruka = prikaziPorukuCuvanja(prozor);
+        PodesavanjaCuvanja podesavanja = trenutnaPodesavanjaCuvanja();
+        Stage poruka = prikaziPoruku(prozor, "Čuvanje", new Label("Čuvanje u toku…"));
 
         // Obrada piksela i upis u fajl traju dugo, pa se rade u pozadini, a program ne "zamrzne".
         // Prozor sa porukom je modalan, pa se za to vreme ne mogu menjati klizači koje obradiPiksele čita.
         Thread pozadina = new Thread(() -> {
             try {
-                Image obradjena = obradiPiksele(izvor, razmera);
-                // Efekti i snimak se rade na glavnoj niti JavaFX-a; pozadina čeka rezultat
-                FutureTask<WritableImage> snimanje = new FutureTask<>(() -> {
-                    ImageView puna = new ImageView(obradjena);
-                    puna.setEffect(napraviEfekat(obradjena.getWidth(), obradjena.getHeight(), razmera));
-                    SnapshotParameters parametri = new SnapshotParameters();
-                    // JPG ne podržava providnost, pa providne delove popunjavamo belom bojom
-                    parametri.setFill(jeJpg ? Color.WHITE : Color.TRANSPARENT);
-                    // Zamućenje širi sliku preko ivica; snimamo samo deo veličine originala
-                    parametri.setViewport(new Rectangle2D(0, 0, obradjena.getWidth(), obradjena.getHeight()));
-                    return puna.snapshot(parametri, null);
-                });
-                Platform.runLater(snimanje);
-                WritableImage snimak = snimanje.get();
-
-                BufferedImage zaUpis = smanji(
-                        okreni(uBufferedImage(snimak, jeJpg, alfa), kvartovi, levoDesno, goreDole),
-                        najvecaDuzaStrana);
-                if (jeJpg) {
-                    upisiJpg(zaUpis, odrediste, kvalitet);
-                } else {
-                    ImageIO.write(zaUpis, "png", odrediste);
-                }
+                obradiIUpisi(izvor, razmera, jeJpg, podesavanja, odrediste);
                 Platform.runLater(() -> {
                     poruka.close();
                     sacuvanoStanje = stanjePriCuvanju;
                 });
             } catch (Exception | OutOfMemoryError ex) {
-                Throwable uzrok = ex instanceof ExecutionException && ex.getCause() != null ? ex.getCause() : ex;
                 Platform.runLater(() -> {
                     poruka.close();
-                    Alert greska = new Alert(Alert.AlertType.ERROR, "Čuvanje nije uspelo: " + uzrok.getMessage());
-                    greska.initOwner(prozor);
-                    greska.showAndWait();
+                    prikaziGresku(prozor, "Čuvanje nije uspelo: " + opisGreske(ex));
                 });
             }
         }, "cuvanje-slike");
@@ -1673,17 +1986,135 @@ public class Main extends Application {
         pozadina.start();
     }
 
-    // Mali prozor "Čuvanje u toku…" koji se ne može zatvoriti i blokira ostale prozore dok traje čuvanje
-    private static Stage prikaziPorukuCuvanja(Stage vlasnik) {
+    private static String opisGreske(Throwable ex) {
+        Throwable uzrok = ex instanceof ExecutionException && ex.getCause() != null ? ex.getCause() : ex;
+        return uzrok.getMessage() != null ? uzrok.getMessage() : uzrok.toString();
+    }
+
+    // Sve što se pri čuvanju primenjuje posle obrade piksela i efekata; čita se na glavnoj niti
+    private record PodesavanjaCuvanja(double alfa, int kvartovi, boolean levoDesno, boolean goreDole,
+                                      Dodaci dodaci, int najvecaStrana, float kvalitet) {
+    }
+
+    private PodesavanjaCuvanja trenutnaPodesavanjaCuvanja() {
+        return new PodesavanjaCuvanja(1 - providnost.getValue(), (int) rotacija.getValue(),
+                ogledaloLevoDesno.getValue() == 1, ogledaloGoreDole.getValue() == 1, trenutniDodaci(),
+                najvecaStrana.getValue() == null ? 0 : najvecaStrana.getValue(), (float) kvalitetJpg.getValue());
+    }
+
+    // Primenjuje sve izmene na sliku u punoj rezoluciji i upisuje je u fajl. Poziva se iz pozadinske niti.
+    // razmera: koliko je puta slika veća od prikaza (filteri se zadaju u pikselima prikaza)
+    private void obradiIUpisi(Image izvor, double razmera, boolean jeJpg, PodesavanjaCuvanja p, File odrediste)
+            throws Exception {
+        Image obradjena = obradiPiksele(izvor, razmera);
+        // Efekti i snimak se rade na glavnoj niti JavaFX-a; pozadina čeka rezultat
+        FutureTask<WritableImage> snimanje = new FutureTask<>(() -> {
+            ImageView puna = new ImageView(obradjena);
+            puna.setEffect(napraviEfekat(obradjena.getWidth(), obradjena.getHeight(), razmera));
+            SnapshotParameters parametri = new SnapshotParameters();
+            // JPG ne podržava providnost, pa providne delove popunjavamo belom bojom
+            parametri.setFill(jeJpg ? Color.WHITE : Color.TRANSPARENT);
+            // Zamućenje širi sliku preko ivica; snimamo samo deo veličine originala
+            parametri.setViewport(new Rectangle2D(0, 0, obradjena.getWidth(), obradjena.getHeight()));
+            return puna.snapshot(parametri, null);
+        });
+        Platform.runLater(snimanje);
+        WritableImage snimak = snimanje.get();
+
+        BufferedImage zaUpis = smanji(dodajTekstIOkvir(
+                okreni(uBufferedImage(snimak, jeJpg, p.alfa()), p.kvartovi(), p.levoDesno(), p.goreDole()),
+                p.dodaci()), p.najvecaStrana());
+        if (jeJpg) {
+            upisiJpg(zaUpis, odrediste, p.kvalitet());
+        } else {
+            ImageIO.write(zaUpis, "png", odrediste);
+        }
+    }
+
+    // Obrada više slika odjednom: na svaku se primenjuju sva trenutna podešavanja (filteri, stil,
+    // isecanje, rotacija, tekst, okvir, veličina) i čuva se u izabrani folder pod istim imenom
+    private void obradiViseSlika(Stage prozor) {
+        potvrdiTekst();
+        FileChooser izbor = new FileChooser();
+        izbor.setTitle("Izaberi slike za obradu");
+        izbor.getExtensionFilters().add(
+                new FileChooser.ExtensionFilter("Slike", "*.jpg", "*.jpeg", "*.png", "*.bmp", "*.gif"));
+        postaviPocetniFolder(izbor);
+        List<File> fajlovi = izbor.showOpenMultipleDialog(prozor);
+        if (fajlovi == null || fajlovi.isEmpty()) {
+            return;
+        }
+        DirectoryChooser izborFoldera = new DirectoryChooser();
+        izborFoldera.setTitle("Izaberi folder za obrađene slike");
+        izborFoldera.setInitialDirectory(fajlovi.get(0).getParentFile());
+        File folder = izborFoldera.showDialog(prozor);
+        if (folder == null) {
+            return;
+        }
+
+        // Filteri se zadaju u pikselima prikaza; za slike koje nisu otvorene uzima se trenutna širina prikaza
+        double sirinaPrikaza = prikaz.getLayoutBounds().getWidth() > 0 ? prikaz.getLayoutBounds().getWidth()
+                : Math.max(400, prikaz.getFitWidth());
+        PodesavanjaCuvanja podesavanja = trenutnaPodesavanjaCuvanja();
+        Label tekst = new Label("Obrađujem sliku 1 od " + fajlovi.size() + "…");
+        Stage poruka = prikaziPoruku(prozor, "Obrada više slika", tekst);
+
+        Thread pozadina = new Thread(() -> {
+            List<String> greske = new ArrayList<>();
+            for (int i = 0; i < fajlovi.size(); i++) {
+                File fajl = fajlovi.get(i);
+                int redniBroj = i + 1;
+                Platform.runLater(() -> tekst.setText(
+                        "Obrađujem sliku " + redniBroj + " od " + fajlovi.size() + "…\n" + fajl.getName()));
+                try {
+                    Image izvor = new Image(fajl.toURI().toString());
+                    if (izvor.isError()) {
+                        throw new IOException("slika ne može da se otvori");
+                    }
+                    String ime = fajl.getName();
+                    boolean jeJpg = ime.toLowerCase().endsWith(".jpg") || ime.toLowerCase().endsWith(".jpeg");
+                    // BMP i GIF se čuvaju kao PNG; original se nikad ne prepisuje
+                    String osnova = ime.contains(".") ? ime.substring(0, ime.lastIndexOf('.')) : ime;
+                    String ekstenzija = jeJpg ? ime.substring(ime.lastIndexOf('.')) : ".png";
+                    File odrediste = new File(folder, osnova + ekstenzija);
+                    if (odrediste.getAbsoluteFile().equals(fajl.getAbsoluteFile())) {
+                        odrediste = new File(folder, osnova + "_obradjeno" + ekstenzija);
+                    }
+                    obradiIUpisi(izvor, sirinaIsecka(izvor) / sirinaPrikaza, jeJpg, podesavanja, odrediste);
+                } catch (Exception | OutOfMemoryError ex) {
+                    greske.add(fajl.getName() + ": " + opisGreske(ex));
+                }
+            }
+            Platform.runLater(() -> {
+                poruka.close();
+                int uspesno = fajlovi.size() - greske.size();
+                Alert kraj = new Alert(greske.isEmpty() ? Alert.AlertType.INFORMATION : Alert.AlertType.WARNING,
+                        "Obrađeno " + uspesno + " od " + fajlovi.size() + " slika u folder:\n"
+                                + folder.getAbsolutePath()
+                                + (greske.isEmpty() ? "" : "\n\nNije uspelo:\n" + String.join("\n", greske)));
+                kraj.setTitle("Obrada više slika");
+                kraj.setHeaderText(null);
+                kraj.initOwner(prozor);
+                kraj.showAndWait();
+            });
+        }, "obrada-vise-slika");
+        pozadina.setDaemon(true);
+        pozadina.start();
+    }
+
+    // Mali prozor sa porukom (npr. "Čuvanje u toku…") koji se ne može zatvoriti i blokira ostale
+    // prozore dok traje posao u pozadini
+    private static Stage prikaziPoruku(Stage vlasnik, String naslov, Label tekst) {
         ProgressIndicator krug = new ProgressIndicator();
         krug.setPrefSize(40, 40);
-        HBox sadrzaj = new HBox(15, krug, new Label("Čuvanje u toku…"));
+        HBox sadrzaj = new HBox(15, krug, tekst);
         sadrzaj.setAlignment(Pos.CENTER_LEFT);
         sadrzaj.setPadding(new Insets(20));
+        sadrzaj.setMinWidth(320);
         Stage poruka = new Stage(StageStyle.UTILITY);
         poruka.initOwner(vlasnik);
         poruka.initModality(Modality.APPLICATION_MODAL);
-        poruka.setTitle("Čuvanje");
+        poruka.setTitle(naslov);
         poruka.setResizable(false);
         poruka.setOnCloseRequest(e -> e.consume());
         poruka.setScene(new Scene(sadrzaj));
